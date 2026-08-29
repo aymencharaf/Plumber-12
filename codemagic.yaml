@@ -1,0 +1,25 @@
+workflows:
+  android-apk:
+    name: Plumber APK Build
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    scripts:
+      - name: Set Android SDK location
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Fix Gradle Wrapper
+        script: |
+          rm -f gradle/wrapper/gradle-wrapper.jar
+          gradle wrapper --gradle-version 9.3.1
+          chmod +x gradlew
+          ./gradlew --version
+
+      - name: Build Debug APK
+        script: |
+          ./gradlew clean
+          ./gradlew assembleDebug --stacktrace
+
+    artifacts:
+      - app/build/outputs/apk/debug/*.apk
