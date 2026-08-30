@@ -12,52 +12,171 @@ workflows:
         PACKAGE_NAME: "com.aistudio.plumber.calculator"
 
     scripts:
-      - name: Set Android SDK location
+
+      # =========================================================
+      # 1. Android SDK
+      # =========================================================
+      - name: Configure Android SDK
         script: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "Android SDK configured."
+
+      # =========================================================
+      # 2. Verify Gemini API Key
+      # =========================================================
       - name: Verify Gemini API Key
         script: |
           if [ -z "$GEMINI_API_KEY" ]; then
             echo "ERROR: GEMINI_API_KEY is missing."
-            echo "Add GEMINI_API_KEY to the plumber-secrets group."
+            echo ""
+            echo "Make sure GEMINI_API_KEY exists in the"
+            echo "Codemagic environment group: plumber-secrets"
             exit 1
           fi
 
           echo "GEMINI_API_KEY is configured."
 
-      - name: Verify Gradle Wrapper
+      # =========================================================
+      # 3. Verify Android Project
+      # =========================================================
+      - name: Verify Android Project
         script: |
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew was not found."
+          echo "Checking Android project..."
+
+          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
+            echo "ERROR: settings.gradle or settings.gradle.kts was not found."
+            echo "Make sure codemagic.yaml is in the Android project root."
             exit 1
           fi
 
-          chmod +x ./gradlew
-
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "ERROR: gradle-wrapper.jar was not found."
+          if [ ! -d "app" ]; then
+            echo "ERROR: app directory was not found."
             exit 1
           fi
 
-          if [ ! -f "./gradle/wrapper/gradle-wrapper.properties" ]; then
-            echo "ERROR: gradle-wrapper.properties was not found."
-            exit 1
-          fi
+          echo "Android project detected successfully."
 
-          echo "Gradle Wrapper files found."
-
-      - name: Check Gradle version
+      # =========================================================
+      # 4. Create Gemini local environment
+      # =========================================================
+      - name: Configure Gemini API Key
         script: |
+          echo "Configuring Gemini API key..."
+
+          if [ -f ".env" ]; then
+            rm -f .env
+          fi
+
+          printf "GEMINI_API_KEY=%s\n" "$GEMINI_API_KEY" > .env
+
+          echo ".env created."
+
+      # =========================================================
+      # 5. Repair corrupted Gradle Wrapper
+      # =========================================================
+      - name: Repair Gradle Wrapper
+        script: |
+          set -e
+
+          GRADLE_VERSION="9.3.1"
+
+          echo "=========================================="
+          echo "Repairing Gradle Wrapper"
+          echo "Gradle version: $GRADLE_VERSION"
+          echo "=========================================="
+
+          echo "Removing corrupted wrapper JAR..."
+          rm -f gradle/wrapper/gradle-wrapper.jar
+
+          echo "Checking system Gradle..."
+
+          if command -v gradle >/dev/null 2>&1; then
+            echo "System Gradle found:"
+            gradle --version
+          else
+            echo "System Gradle not found."
+            echo "Downloading Gradle $GRADLE_VERSION..."
+
+            curl -L \
+              --fail \
+              --retry 3 \
+              "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+              -o /tmp/gradle.zip
+
+            rm -rf /tmp/gradle
+            mkdir -p /tmp/gradle
+
+            unzip -q /tmp/gradle.zip -d /tmp/gradle
+
+            export PATH="/tmp/gradle/gradle-${GRADLE_VERSION}/bin:$PATH"
+
+            echo "Downloaded Gradle:"
+            gradle --version
+          fi
+
+          echo "Creating wrapper directory..."
+          mkdir -p gradle/wrapper
+
+          echo "Generating Gradle Wrapper..."
+
+          gradle wrapper \
+            --gradle-version "$GRADLE_VERSION" \
+            --distribution-type bin
+
+          chmod +x gradlew
+
+          echo "=========================================="
+          echo "Wrapper files:"
+          echo "=========================================="
+
+          ls -lh gradle/wrapper/
+          ls -lh gradlew
+
+          echo "=========================================="
+          echo "Testing Gradle Wrapper"
+          echo "=========================================="
+
           ./gradlew --version
 
-      - name: Clean project
+      # =========================================================
+      # 6. Clean project
+      # =========================================================
+      - name: Clean Project
         script: |
-          ./gradlew clean
+          set -e
 
+          echo "Cleaning project..."
+
+          ./gradlew clean --stacktrace
+
+      # =========================================================
+      # 7. Build Debug APK
+      # =========================================================
       - name: Build Debug APK
         script: |
-          ./gradlew assembleDebug --stacktrace
+          set -e
 
+          echo "=========================================="
+          echo "Building Plumber Debug APK"
+          echo "=========================================="
+
+          ./gradlew assembleDebug \
+            --stacktrace \
+            --no-daemon
+
+          echo "=========================================="
+          echo "APK build completed."
+          echo "=========================================="
+
+          find app/build/outputs/apk/debug \
+            -type f \
+            -name "*.apk" \
+            -print
+
+    # ===========================================================
+    # APK OUTPUT
+    # ===========================================================
     artifacts:
       - app/build/outputs/apk/debug/*.apk
