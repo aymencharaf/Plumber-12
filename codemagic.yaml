@@ -4,22 +4,80 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
 
+    environment:
+      groups:
+        - plumber-secrets
+
+      vars:
+        PACKAGE_NAME: "com.aistudio.plumber.calculator"
+
     scripts:
+      # ---------------------------------------------------------
+      # 1. Android SDK
+      # ---------------------------------------------------------
       - name: Set Android SDK location
         script: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Fix Gradle Wrapper
+      # ---------------------------------------------------------
+      # 2. Verify Gemini API Key
+      # ---------------------------------------------------------
+      # The actual key is stored securely in:
+      # plumber-secrets
+      #
+      # Variable:
+      # GEMINI_API_KEY
+      # ---------------------------------------------------------
+      - name: Verify Gemini API Key
         script: |
-          rm -f gradle/wrapper/gradle-wrapper.jar
-          gradle wrapper --gradle-version 9.3.1
-          chmod +x gradlew
-          ./gradlew --version
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "ERROR: GEMINI_API_KEY is missing."
+            echo "Add GEMINI_API_KEY to the plumber-secrets group."
+            exit 1
+          fi
 
-      - name: Build Debug APK
+          echo "GEMINI_API_KEY is configured successfully."
+
+      # ---------------------------------------------------------
+      # 3. Verify Gradle Wrapper
+      # ---------------------------------------------------------
+      - name: Verify Gradle Wrapper
+        script: |
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew was not found."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "ERROR: gradle-wrapper.jar was not found."
+            exit 1
+          fi
+
+          echo "Gradle Wrapper found."
+
+      # ---------------------------------------------------------
+      # 4. Clean
+      # ---------------------------------------------------------
+      - name: Clean project
         script: |
           ./gradlew clean
+
+      # ---------------------------------------------------------
+      # 5. Build Debug APK
+      # ---------------------------------------------------------
+      - name: Build Debug APK
+        script: |
           ./gradlew assembleDebug --stacktrace
 
     artifacts:
       - app/build/outputs/apk/debug/*.apk
+
+    publishing:
+      email:
+        recipients:
+          - $CM_EMAIL
+        notify:
+          success: true
+          failure: true
