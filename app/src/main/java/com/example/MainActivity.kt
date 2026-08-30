@@ -251,9 +251,7 @@ fun PlumberApp() {
                         }
                     },
                     onRegisterClick = {
-                        navController.navigate(Screen.Home.route) {
-                            popUpTo(Screen.Welcome.route) { inclusive = true }
-                        }
+                        navController.navigate(Screen.Login.route)
                     }
                 )
             }
@@ -261,6 +259,7 @@ fun PlumberApp() {
             composable(Screen.Login.route) {
                 LoginScreen(
                     viewModel = viewModel,
+                    initialTab = 1, // Open on "تسجيل عامل جديد" tab
                     onLoginSuccess = {
                         navController.navigate(Screen.Home.route) {
                             popUpTo(Screen.Welcome.route) { inclusive = true }

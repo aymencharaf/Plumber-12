@@ -135,12 +135,12 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             FirestoreSync.syncUserToFirestore(adminUser)
         }
 
-        val existingWorker = repository.getUserByPhoneOrEmail("0669076802") ?: repository.getUserByPhoneOrEmail("worker@plumber.com")
+        val existingWorker = repository.getUserByPhoneOrEmail("0660000000") ?: repository.getUserByPhoneOrEmail("worker@plumber.com")
         if (existingWorker == null) {
             val workerUser = TeamUser(
                 uid = "worker_001",
                 name = "أحمد (عامل التركيبات)",
-                phone = "0669076802",
+                phone = "0660000000",
                 email = "worker@plumber.com",
                 password = "adb120012",
                 role = "WORKER",
@@ -187,11 +187,11 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     active = true
                 )
                 repository.insertOrUpdateTeamUser(user)
-            } else if (user == null && (cleanInput == "0669076802" || cleanInput == "worker@plumber.com") && cleanPass == "adb120012") {
+            } else if (user == null && (cleanInput == "0660000000" || cleanInput == "worker@plumber.com") && cleanPass == "adb120012") {
                 user = TeamUser(
                     uid = "worker_001",
                     name = "أحمد (عامل التركيبات)",
-                    phone = "0669076802",
+                    phone = "0660000000",
                     email = "worker@plumber.com",
                     password = "adb120012",
                     role = "WORKER",

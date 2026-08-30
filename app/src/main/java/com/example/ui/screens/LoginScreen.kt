@@ -47,12 +47,13 @@ import com.example.ui.viewmodel.PlumberViewModel
 @Composable
 fun LoginScreen(
     viewModel: PlumberViewModel? = null,
+    initialTab: Int = 0,
     onLoginSuccess: () -> Unit,
     onBack: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
 
-    var selectedTab by remember { mutableStateOf(0) } // 0: تسجيل الدخول, 1: تسجيل عامل جديد
+    var selectedTab by remember { mutableStateOf(initialTab) } // 0: تسجيل الدخول, 1: تسجيل عامل جديد
 
     // Login State
     var emailOrPhone by remember { mutableStateOf("") }

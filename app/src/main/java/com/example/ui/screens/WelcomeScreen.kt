@@ -142,12 +142,12 @@ fun WelcomeScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Team Restriction Notice Banner
+            // Team Notice Banner
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                color = Color(0xFFFEF3C7),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
+                color = Color(0xFFEFF6FF),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3B82F6).copy(alpha = 0.4f))
             ) {
                 Row(
                     modifier = Modifier.padding(14.dp),
@@ -157,14 +157,14 @@ fun WelcomeScreen(
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = Color(0xFFB45309),
+                        tint = Color(0xFF1D4ED8),
                         modifier = Modifier.size(24.dp)
                     )
                     Text(
-                        text = "التطبيق خاص بفريق العمل الداخلي فقط.\nلا يوجد خيار لإنشاء حسابات جديدة هنا. الحسابات تُنشأ عبر الإدارة فقط.",
+                        text = "مرحباً بك! يمكنك تسجيل الدخول بحسابك أو استخدام خيار (تسجيل جديد) لإنشاء حساب عامل جديد والمزامنة مع Firestore 🟢",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF92400E),
+                        color = Color(0xFF1E40AF),
                         lineHeight = 18.sp
                     )
                 }
@@ -286,6 +286,25 @@ fun WelcomeScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Register New Worker Button
+                    OutlinedButton(
+                        onClick = { onRegisterClick() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text(
+                            text = "تسجيل جديد (حساب عامل جديد) 📝",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
             }

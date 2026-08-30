@@ -466,7 +466,7 @@ fun AdminPanelDialog(
                                             onClick = {
                                                 viewModel.updateTeamStoreSettings(
                                                     storeNameVal = storeNameInput.ifBlank { "ورشة السباكة الإحترافية" },
-                                                    storePhoneVal = storePhoneInput.ifBlank { "0669076802" },
+                                                    storePhoneVal = storePhoneInput.ifBlank { "0660000000" },
                                                     activeWorkerVal = activeWorker,
                                                     managerNameVal = managerNameInput.ifBlank { "المدير أيمين" },
                                                     storeWhatsappVal = storeWhatsappInput.ifBlank { "0669964145" }

@@ -155,7 +155,7 @@ fun SettingsScreen(
                         value = storePhoneInput,
                         onValueChange = { storePhoneInput = it },
                         label = { Text("رقم هاتف العمل / الاتصال المباشر") },
-                        placeholder = { Text("مثال: 0669076802") },
+                        placeholder = { Text("مثال: 0660000000") },
                         leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         modifier = Modifier.fillMaxWidth(),
