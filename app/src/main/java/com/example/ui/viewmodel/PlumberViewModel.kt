@@ -200,36 +200,116 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 repository.insertOrUpdateTeamUser(user)
             }
 
+            // If still null, try fetching from Firestore Database
             if (user == null) {
-                onResult(false, "بيانات الدخول غير صحيحة. يرجى مراجعة الإدارة.")
+                FirestoreSync.fetchUserFromFirestoreByPhoneOrEmail(cleanInput) { fetchedUser ->
+                    if (fetchedUser != null) {
+                        viewModelScope.launch {
+                            repository.insertOrUpdateTeamUser(fetchedUser)
+                            processUserLogin(fetchedUser, cleanPass, onResult)
+                        }
+                    } else {
+                        onResult(false, "بيانات الدخول غير مسجلة لدينا. يمكنك إنشاء حساب عامل جديد.")
+                    }
+                }
+            } else {
+                processUserLogin(user, cleanPass, onResult)
+            }
+        }
+    }
+
+    private suspend fun processUserLogin(user: TeamUser, cleanPass: String, onResult: (Boolean, String) -> Unit) {
+        if (!user.active) {
+            onResult(false, "هذا الحساب معطل حالياً من قبل الإدارة.")
+            return
+        }
+
+        if (user.password.isNotBlank() && user.password != cleanPass) {
+            onResult(false, "كلمة المرور غير صحيحة.")
+            return
+        }
+
+        val updatedUser = user.copy(lastLoginAt = System.currentTimeMillis())
+        repository.insertOrUpdateTeamUser(updatedUser)
+        FirestoreSync.syncUserToFirestore(updatedUser)
+
+        _currentUser.value = updatedUser
+        _currentRole.value = updatedUser.role.uppercase()
+        _isUserLoggedIn.value = true
+        _isManagerLoggedIn.value = (updatedUser.role.uppercase() == "ADMIN")
+
+        authPrefs.edit().putString("logged_uid", updatedUser.uid).apply()
+
+        FirestoreSync.startRealtimeListener(getApplication(), updatedUser.role, updatedUser.uid)
+
+        logAuditAction("تسجيل دخول إلى النظام: ${updatedUser.name}", 0, "")
+        onResult(true, "مرحباً بك ${updatedUser.name}! 🟢")
+    }
+
+    // Direct Worker Self-Registration & Linking to Firestore
+    fun registerWorkerAccount(
+        name: String,
+        phone: String,
+        email: String,
+        pass: String,
+        role: String = "WORKER",
+        autoLogin: Boolean = true,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        if (name.isBlank() || phone.isBlank() || pass.isBlank()) {
+            onResult(false, "يرجى ملء الاسم الكامل، رقم الهاتف وكلمة المرور.")
+            return
+        }
+
+        viewModelScope.launch {
+            val cleanPhone = phone.trim()
+            val cleanEmail = if (email.isBlank()) "$cleanPhone@plumber.com" else email.trim()
+
+            val existing = repository.getUserByPhoneOrEmail(cleanPhone)
+            if (existing != null) {
+                onResult(false, "رقم الهاتف ($cleanPhone) مسجل بالفعل في النظام.")
                 return@launch
             }
 
-            if (!user.active) {
-                onResult(false, "هذا الحساب معطل حالياً من قبل الإدارة.")
-                return@launch
+            val newUid = "worker_${System.currentTimeMillis()}"
+            val newUser = TeamUser(
+                uid = newUid,
+                name = name.trim(),
+                phone = cleanPhone,
+                email = cleanEmail,
+                password = pass.trim(),
+                role = role.uppercase(),
+                active = true,
+                createdAt = System.currentTimeMillis(),
+                lastLoginAt = System.currentTimeMillis()
+            )
+
+            // Save to local Room DB
+            repository.insertOrUpdateTeamUser(newUser)
+
+            // Sync directly to Firestore
+            FirestoreSync.syncUserToFirestore(newUser)
+
+            // Update workers list
+            val updatedList = _workersList.value.toMutableList()
+            val entryStr = "${newUser.name} (${newUser.phone})"
+            if (!updatedList.contains(entryStr)) {
+                updatedList.add(entryStr)
+                updateWorkersList(updatedList)
             }
 
-            if (user.password.isNotBlank() && user.password != cleanPass) {
-                onResult(false, "كلمة المرور غير صحيحة.")
-                return@launch
+            logAuditAction("تسجيل حساب عامل جديد ومزامنته مع Firestore: ${newUser.name} (${newUser.role})", 0, "")
+
+            if (autoLogin) {
+                _currentUser.value = newUser
+                _currentRole.value = newUser.role.uppercase()
+                _isUserLoggedIn.value = true
+                _isManagerLoggedIn.value = (newUser.role.uppercase() == "ADMIN")
+                authPrefs.edit().putString("logged_uid", newUser.uid).apply()
+                FirestoreSync.startRealtimeListener(getApplication(), newUser.role, newUser.uid)
             }
 
-            val updatedUser = user.copy(lastLoginAt = System.currentTimeMillis())
-            repository.insertOrUpdateTeamUser(updatedUser)
-            FirestoreSync.syncUserToFirestore(updatedUser)
-
-            _currentUser.value = updatedUser
-            _currentRole.value = updatedUser.role.uppercase()
-            _isUserLoggedIn.value = true
-            _isManagerLoggedIn.value = (updatedUser.role.uppercase() == "ADMIN")
-
-            authPrefs.edit().putString("logged_uid", updatedUser.uid).apply()
-
-            FirestoreSync.startRealtimeListener(getApplication(), updatedUser.role, updatedUser.uid)
-
-            logAuditAction("تسجيل دخول إلى النظام", 0, "")
-            onResult(true, "مرحباً ${updatedUser.name}!")
+            onResult(true, "تم تسجيل حساب العامل ${newUser.name} وربطه بـ Firestore بنجاح! 🟢🔥")
         }
     }
 

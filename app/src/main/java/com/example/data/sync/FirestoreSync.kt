@@ -709,6 +709,66 @@ object FirestoreSync {
         }
     }
 
+    fun fetchUserFromFirestoreByPhoneOrEmail(
+        query: String,
+        onResult: (TeamUser?) -> Unit
+    ) {
+        val db = getDb()
+        if (db == null) {
+            onResult(null)
+            return
+        }
+
+        val cleanQuery = query.trim()
+        db.collection("users")
+            .whereEqualTo("phone", cleanQuery)
+            .get()
+            .addOnSuccessListener { snapshots ->
+                if (snapshots != null && !snapshots.isEmpty) {
+                    val doc = snapshots.documents.first()
+                    val user = TeamUser(
+                        uid = doc.getString("uid") ?: doc.id,
+                        name = doc.getString("name") ?: "",
+                        phone = doc.getString("phone") ?: cleanQuery,
+                        email = doc.getString("email") ?: "",
+                        password = doc.getString("password") ?: "",
+                        role = doc.getString("role") ?: "WORKER",
+                        active = doc.getBoolean("active") ?: true,
+                        createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+                    )
+                    onResult(user)
+                } else {
+                    db.collection("users")
+                        .whereEqualTo("email", cleanQuery)
+                        .get()
+                        .addOnSuccessListener { emailSnapshots ->
+                            if (emailSnapshots != null && !emailSnapshots.isEmpty) {
+                                val doc = emailSnapshots.documents.first()
+                                val user = TeamUser(
+                                    uid = doc.getString("uid") ?: doc.id,
+                                    name = doc.getString("name") ?: "",
+                                    phone = doc.getString("phone") ?: "",
+                                    email = doc.getString("email") ?: cleanQuery,
+                                    password = doc.getString("password") ?: "",
+                                    role = doc.getString("role") ?: "WORKER",
+                                    active = doc.getBoolean("active") ?: true,
+                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
+                                )
+                                onResult(user)
+                            } else {
+                                onResult(null)
+                            }
+                        }
+                        .addOnFailureListener {
+                            onResult(null)
+                        }
+                }
+            }
+            .addOnFailureListener {
+                onResult(null)
+            }
+    }
+
     fun syncStoreSettingsToFirestore(
         storeName: String,
         storePhone: String,

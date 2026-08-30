@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.ListAlt
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -51,6 +52,7 @@ sealed class Screen(val route: String, val titleAr: String, val icon: ImageVecto
     object Estimator : Screen("estimator", "الحاسبة", Icons.Default.Calculate)
     object Appointment : Screen("appointments", "طلب موعد", Icons.Default.Event)
     object Welcome : Screen("welcome", "الترحيب", Icons.Default.Home)
+    object Login : Screen("login", "تسجيل الدخول", Icons.Default.Lock)
 }
 
 class MainActivity : ComponentActivity() {
@@ -253,6 +255,18 @@ fun PlumberApp() {
                             popUpTo(Screen.Welcome.route) { inclusive = true }
                         }
                     }
+                )
+            }
+
+            composable(Screen.Login.route) {
+                LoginScreen(
+                    viewModel = viewModel,
+                    onLoginSuccess = {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Welcome.route) { inclusive = true }
+                        }
+                    },
+                    onBack = { navController.popBackStack() }
                 )
             }
 
