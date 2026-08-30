@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "292736756652",
+    "project_id": "plumber-team",
+    "storage_bucket": "plumber-team.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:292736756652:android:ae8f99876c7102e363e809",
+        "android_client_info": {
+          "package_name": "com.aistudio.plumber.calculator"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAA27U-58W8h_-sahzJLXTgPCqhOdAVBso"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
