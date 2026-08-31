@@ -82,6 +82,7 @@ class GoogleDriveBackupManager(private val context: Context) {
             pObj.put("notes", p.notes)
             pObj.put("workTypeKey", p.workTypeKey)
             pObj.put("workTypeNameAr", p.workTypeNameAr)
+            pObj.put("workshopId", p.workshopId)
             pObj.put("createdAt", p.createdAt)
             pObj.put("updatedAt", p.updatedAt)
             projectsArray.put(pObj)
@@ -102,6 +103,7 @@ class GoogleDriveBackupManager(private val context: Context) {
             iObj.put("unit", item.unit)
             iObj.put("isPurchased", item.isPurchased)
             iObj.put("notes", item.notes)
+            iObj.put("workshopId", item.workshopId)
             iObj.put("createdAt", item.createdAt)
             itemsArray.put(iObj)
         }
@@ -171,6 +173,7 @@ class GoogleDriveBackupManager(private val context: Context) {
             uObj.put("password", user.password)
             uObj.put("role", user.role)
             uObj.put("active", user.active)
+            uObj.put("workshopId", user.workshopId)
             usersArray.put(uObj)
         }
         rootJson.put("teamUsers", usersArray)
@@ -241,6 +244,7 @@ class GoogleDriveBackupManager(private val context: Context) {
                         notes = p.optString("notes", ""),
                         workTypeKey = p.optString("workTypeKey", "GENERAL"),
                         workTypeNameAr = p.optString("workTypeNameAr", "عام"),
+                        workshopId = p.optString("workshopId", ""),
                         createdAt = p.optLong("createdAt", System.currentTimeMillis()),
                         updatedAt = p.optLong("updatedAt", System.currentTimeMillis())
                     )
@@ -265,6 +269,7 @@ class GoogleDriveBackupManager(private val context: Context) {
                         unit = itemObj.optString("unit", "قطعة"),
                         isPurchased = itemObj.optBoolean("isPurchased", false),
                         notes = itemObj.optString("notes", ""),
+                        workshopId = itemObj.optString("workshopId", ""),
                         createdAt = itemObj.optLong("createdAt", System.currentTimeMillis())
                     )
                     db.projectItemDao().insertItem(item)
@@ -345,7 +350,8 @@ class GoogleDriveBackupManager(private val context: Context) {
                         email = uObj.optString("email", ""),
                         password = uObj.optString("password", ""),
                         role = uObj.optString("role", "WORKER"),
-                        active = uObj.optBoolean("active", true)
+                        active = uObj.optBoolean("active", true),
+                        workshopId = uObj.optString("workshopId", "")
                     )
                     db.teamUserDao().insertOrUpdateUser(user)
                 }

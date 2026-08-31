@@ -22,6 +22,7 @@ data class Project(
     val status: String = "NEW", // حالة المشروع العامة: NEW, IN_PROGRESS, COMPLETED, CANCELLED
     val laborCost: Double = 0.0, // أجرة اليد العاملة / مصاريف الفني (المال)
     val paidAmount: Double = 0.0, // المبلغ المدفوع تسقيعاً / التسديدات
+    val workshopId: String = "", // رمز أو معرّف الورشة المعزولة
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {

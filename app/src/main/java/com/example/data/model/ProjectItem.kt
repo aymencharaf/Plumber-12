@@ -52,6 +52,8 @@ data class ProjectItem(
 
     val imageUri: String? = null,
 
+    val workshopId: String = "",
+
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun getPipesCount(): Int? {

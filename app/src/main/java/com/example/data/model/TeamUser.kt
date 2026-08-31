@@ -13,6 +13,7 @@ data class TeamUser(
     val password: String = "",
     val role: String = "WORKER", // ADMIN, WORKER
     val active: Boolean = true,
+    val workshopId: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val lastLoginAt: Long = System.currentTimeMillis()
 ) {

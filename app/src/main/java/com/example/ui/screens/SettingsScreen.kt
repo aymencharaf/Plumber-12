@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.sync.SyncCodeManager
 import com.example.ui.components.GoogleDriveBackupCard
 import com.example.ui.viewmodel.PlumberViewModel
 
@@ -44,6 +45,7 @@ fun SettingsScreen(
     val currentActiveWorker by viewModel.activeWorker.collectAsState()
     val workersList by viewModel.workersList.collectAsState()
     val isManagerLoggedIn by viewModel.isManagerLoggedIn.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
 
     var storeNameInput by remember(currentStoreName) { mutableStateOf(currentStoreName) }
     var storePhoneInput by remember(currentStorePhone) { mutableStateOf(currentStorePhone) }
@@ -459,29 +461,51 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
+                    var syncCodeInput by remember { mutableStateOf("") }
+                    val currentWorkshopCode = currentUser?.workshopId?.ifBlank { SyncCodeManager.getSyncCode(context) }?.ifBlank { "غير مرتبط بورشة" } ?: "غير مرتبط بورشة"
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("رمز الورشة الحالي (Workshop ID)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(currentWorkshopCode, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text("رمز الورشة المشتركة (Sync Code)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("WORKSHOP-0669", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
+                        OutlinedTextField(
+                            value = syncCodeInput,
+                            onValueChange = { syncCodeInput = it },
+                            label = { Text("أدخل رمز الورشة (Sync Code)") },
+                            placeholder = { Text("مثال: WORKSHOP-8A3F") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        )
 
                         Button(
                             onClick = {
-                                Toast.makeText(context, "تمت مزامنة جميع البيانات مع السحابة بنجاح! ☁️✅", Toast.LENGTH_SHORT).show()
+                                if (syncCodeInput.isBlank()) {
+                                    Toast.makeText(context, "يرجى إدخال رمز الورشة أولاً", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    viewModel.connectWorkerToWorkshopWithSyncCode(syncCodeInput) { success, msg ->
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        if (success) {
+                                            syncCodeInput = ""
+                                        }
+                                    }
+                                }
                             },
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("مزامنة الآن 🔄", fontWeight = FontWeight.Bold)
+                            Text("انضمام 🔗", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

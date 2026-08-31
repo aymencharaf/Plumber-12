@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isUser(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isWorkshopMember(workshopId) {
+      return isAuthenticated() && (
+        getUserData().workshopId == workshopId ||
+        exists(/databases/$(database)/documents/workshops/$(workshopId)/members/$(request.auth.uid))
+      );
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isUser(userId);
+      // Prevent changing role, ownerId, or workshopId maliciously from client
+      allow update: if isUser(userId) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId', 'workshopId']));
+    }
+
+    // Workshops collection
+    match /workshops/{workshopId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isWorkshopMember(workshopId);
+
+      match /members/{memberId} {
+        allow read: if isAuthenticated();
+        // Workers cannot add themselves to arbitrary workshops directly.
+        // Joining must go through the secure Cloud Function (joinWorkshopBySyncCode).
+        allow write: if isAuthenticated() && isWorkshopMember(workshopId);
+      }
+    }
+
+    // Projects collection
+    match /projects/{projectId} {
+      allow read: if isAuthenticated() && (
+        isWorkshopMember(resource.data.workshopId) ||
+        resource.data.createdBy == request.auth.uid
+      );
+      allow create: if isAuthenticated() && isWorkshopMember(request.resource.data.workshopId);
+      allow update, delete: if isAuthenticated() && isWorkshopMember(resource.data.workshopId);
+    }
+
+    // Project items collection
+    match /project_items/{itemId} {
+      allow read: if isAuthenticated() && (
+        isWorkshopMember(resource.data.workshopId) ||
+        resource.data.workerId == request.auth.uid
+      );
+      allow create, update, delete: if isAuthenticated() && isWorkshopMember(request.resource.data.workshopId);
+    }
+
+    // Store settings & Audit logs
+    match /store_settings/{configId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /audit_logs/{logId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

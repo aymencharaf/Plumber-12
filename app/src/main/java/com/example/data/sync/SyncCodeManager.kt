@@ -15,7 +15,7 @@ object SyncCodeManager {
 
     private const val TAG = "SyncCodeManager"
     private const val PREF_SYNC_CODE_KEY = "current_sync_code"
-    private const val DEFAULT_SYNC_CODE = "WORKSHOP-0669"
+    private const val DEFAULT_SYNC_CODE = ""
 
     /**
      * قراءة رمز المزامنة الحالي المخزن على الجهاز

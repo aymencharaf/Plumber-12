@@ -160,7 +160,12 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 _currentRole.value = user.role.uppercase()
                 _isUserLoggedIn.value = true
                 _isManagerLoggedIn.value = (user.role.uppercase() == "ADMIN")
-                FirestoreSync.startRealtimeListener(getApplication(), user.role, user.uid)
+                FirestoreSync.startRealtimeListener(
+                    getApplication(),
+                    user.role,
+                    user.uid,
+                    user.workshopId
+                )
             }
         }
     }
@@ -240,7 +245,12 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         authPrefs.edit().putString("logged_uid", updatedUser.uid).apply()
 
-        FirestoreSync.startRealtimeListener(getApplication(), updatedUser.role, updatedUser.uid)
+        FirestoreSync.startRealtimeListener(
+            getApplication(),
+            updatedUser.role,
+            updatedUser.uid,
+            updatedUser.workshopId
+        )
 
         logAuditAction("تسجيل دخول إلى النظام: ${updatedUser.name}", 0, "")
         onResult(true, "مرحباً بك ${updatedUser.name}! 🟢")
@@ -306,7 +316,12 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 _isUserLoggedIn.value = true
                 _isManagerLoggedIn.value = (newUser.role.uppercase() == "ADMIN")
                 authPrefs.edit().putString("logged_uid", newUser.uid).apply()
-                FirestoreSync.startRealtimeListener(getApplication(), newUser.role, newUser.uid)
+                FirestoreSync.startRealtimeListener(
+                    getApplication(),
+                    newUser.role,
+                    newUser.uid,
+                    newUser.workshopId
+                )
             }
 
             onResult(true, "تم تسجيل حساب العامل ${newUser.name} وربطه بـ Firestore بنجاح! 🟢🔥")
@@ -324,6 +339,34 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         _isUserLoggedIn.value = false
         _isManagerLoggedIn.value = false
         authPrefs.edit().remove("logged_uid").apply()
+    }
+
+    fun connectWorkerToWorkshopWithSyncCode(syncCode: String, onResult: (Boolean, String) -> Unit) {
+        val user = _currentUser.value
+        if (user == null) {
+            onResult(false, "يجب تسجيل الدخول أولاً")
+            return
+        }
+        viewModelScope.launch {
+            FirestoreSync.joinWorkerToWorkshop(user.uid, syncCode) { success, msg, targetWorkshopId ->
+                if (success && targetWorkshopId.isNotBlank()) {
+                    val updated = user.copy(workshopId = targetWorkshopId)
+                    viewModelScope.launch {
+                        repository.insertOrUpdateTeamUser(updated)
+                        _currentUser.value = updated
+                        FirestoreSync.startRealtimeListener(
+                            getApplication(),
+                            updated.role,
+                            updated.uid,
+                            updated.workshopId
+                        )
+                        onResult(true, msg)
+                    }
+                } else {
+                    onResult(false, msg)
+                }
+            }
+        }
     }
 
     // Admin Worker Account Management

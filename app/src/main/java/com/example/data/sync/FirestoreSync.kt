@@ -54,7 +54,8 @@ object FirestoreSync {
     fun startRealtimeListener(
         context: Context,
         userRole: String,
-        workerUid: String = ""
+        workerUid: String = "",
+        workshopId: String = ""
     ) {
 
         val db = getDb() ?: return
@@ -84,22 +85,30 @@ object FirestoreSync {
                 getCurrentUserUid()
             }
 
+        if (workshopId.isBlank()) {
+            Log.w(TAG, "workshopId is blank. Skipping realtime listener setup until workshopId is bound.")
+            return
+        }
+
         Log.d(
             TAG,
             "Starting realtime sync. " +
                     "Role=$normalizedRole " +
                     "UID=$targetUid " +
+                    "WorkshopId=$workshopId " +
                     "Management=$isManagement"
         )
 
         val projectsQuery =
             if (isManagement) {
                 db.collection("projects")
+                    .whereEqualTo("workshopId", workshopId)
             } else if (
                 normalizedRole == "WORKER" &&
                 targetUid.isNotBlank()
             ) {
                 db.collection("projects")
+                    .whereEqualTo("workshopId", workshopId)
                     .whereArrayContains(
                         "assignedWorkers",
                         targetUid
@@ -246,6 +255,7 @@ object FirestoreSync {
                                     status = status,
                                     laborCost = laborCost,
                                     paidAmount = paidAmount,
+                                    workshopId = doc.getString("workshopId") ?: workshopId,
                                     createdAt = createdAt,
                                     updatedAt = updatedAt
                                 )
@@ -268,8 +278,10 @@ object FirestoreSync {
         val projectItemsQuery =
             if (isManagement) {
                 db.collection("project_items")
+                    .whereEqualTo("workshopId", workshopId)
             } else {
                 db.collection("project_items")
+                    .whereEqualTo("workshopId", workshopId)
                     .whereEqualTo(
                         "workerId",
                         targetUid
@@ -394,6 +406,7 @@ object FirestoreSync {
                                     notes = notes,
                                     iconType = iconType,
                                     imageUri = imageUri,
+                                    workshopId = doc.getString("workshopId") ?: workshopId,
                                     createdAt = createdAt
                                 )
 
@@ -427,7 +440,8 @@ object FirestoreSync {
     }
 
     fun syncProjectToFirestore(
-        project: Project
+        project: Project,
+        workshopId: String = ""
     ) {
         val db = getDb() ?: return
 
@@ -437,6 +451,9 @@ object FirestoreSync {
                     .split(",")
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
+
+            val currentWorkshop =
+                if (project.workshopId.isNotBlank()) project.workshopId else workshopId
 
             val projectMap =
                 mapOf(
@@ -458,6 +475,7 @@ object FirestoreSync {
                     "status" to project.status,
                     "laborCost" to project.laborCost,
                     "paidAmount" to project.paidAmount,
+                    "workshopId" to currentWorkshop,
                     "createdAt" to project.createdAt,
                     "updatedAt" to project.updatedAt
                 )
@@ -500,7 +518,8 @@ object FirestoreSync {
     fun syncProjectItemToFirestore(
         item: ProjectItem,
         workerId: String = "",
-        workerName: String = ""
+        workerName: String = "",
+        workshopId: String = ""
     ) {
         val db = getDb() ?: return
 
@@ -517,6 +536,9 @@ object FirestoreSync {
                 )
                 return
             }
+
+            val currentWorkshop =
+                if (item.workshopId.isNotBlank()) item.workshopId else workshopId
 
             val itemMap =
                 mapOf(
@@ -539,6 +561,7 @@ object FirestoreSync {
                     "imageUri" to item.imageUri,
                     "workerId" to currentUid,
                     "workerName" to workerName,
+                    "workshopId" to currentWorkshop,
                     "createdAt" to item.createdAt,
                     "updatedAt" to System.currentTimeMillis()
                 )
@@ -667,9 +690,9 @@ object FirestoreSync {
                     "name" to user.name,
                     "phone" to user.phone,
                     "email" to user.email,
-                    "password" to user.password,
                     "role" to user.role,
                     "active" to user.active,
+                    "workshopId" to user.workshopId,
                     "createdAt" to user.createdAt,
                     "lastLoginAt" to user.lastLoginAt
                 )
@@ -734,6 +757,7 @@ object FirestoreSync {
                         password = doc.getString("password") ?: "",
                         role = doc.getString("role") ?: "WORKER",
                         active = doc.getBoolean("active") ?: true,
+                        workshopId = doc.getString("workshopId") ?: "",
                         createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
                     )
                     onResult(user)
@@ -752,6 +776,7 @@ object FirestoreSync {
                                     password = doc.getString("password") ?: "",
                                     role = doc.getString("role") ?: "WORKER",
                                     active = doc.getBoolean("active") ?: true,
+                                    workshopId = doc.getString("workshopId") ?: "",
                                     createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis()
                                 )
                                 onResult(user)
@@ -865,6 +890,54 @@ object FirestoreSync {
                 "Error syncAuditLogToFirestore: ${e.message}",
                 e
             )
+        }
+    }
+
+    /**
+     * التحقق من الـ Sync Code وإضافة العامل بورشة العمل في Firestore
+     * workshops/{workshopId}/members/{workerUid} -> role: "worker"
+     * users/{workerUid} -> workshopId
+     */
+    fun joinWorkerToWorkshop(
+        workerUid: String,
+        syncCode: String,
+        onResult: (Boolean, String, String) -> Unit
+    ) {
+        val cleanCode = syncCode.trim().uppercase()
+        if (cleanCode.isBlank()) {
+            onResult(false, "رمز المزامنة فارغ", "")
+            return
+        }
+
+        val data = hashMapOf("syncCode" to cleanCode)
+
+        try {
+            com.google.firebase.functions.FirebaseFunctions.getInstance()
+                .getHttpsCallable("joinWorkshopBySyncCode")
+                .call(data)
+                .addOnSuccessListener { result ->
+                    @Suppress("UNCHECKED_CAST")
+                    val resData = result.data as? Map<String, Any>
+                    val success = resData?.get("success") as? Boolean ?: true
+                    val targetWorkshopId = resData?.get("workshopId") as? String ?: ""
+                    val msg = resData?.get("message") as? String ?: "تم الانضمام للورشة بنجاح 🎉"
+                    if (success && targetWorkshopId.isNotBlank()) {
+                        onResult(true, msg, targetWorkshopId)
+                    } else {
+                        onResult(false, msg.ifBlank { "رمز المزامنة غير صحيح، الورشة غير موجودة" }, "")
+                    }
+                }
+                .addOnFailureListener { e ->
+                    val errMsg = e.message ?: ""
+                    if (errMsg.contains("INVALID_SYNC_CODE") || errMsg.contains("NOT_FOUND", ignoreCase = true)) {
+                        onResult(false, "رمز المزامنة غير صحيح، الورشة غير موجودة", "")
+                    } else {
+                        onResult(false, "فشل الانضمام للورشة: ${e.localizedMessage}", "")
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error invoking Cloud Function joinWorkshopBySyncCode: ${e.message}")
+            onResult(false, "فشل الاتصال بالخدمة السحابية: ${e.localizedMessage}", "")
         }
     }
 }
