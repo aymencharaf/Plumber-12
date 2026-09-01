@@ -798,20 +798,25 @@ object FirestoreSync {
         storeName: String,
         storePhone: String,
         storeWhatsapp: String,
-        managerName: String
+        managerName: String,
+        workshopId: String = ""
     ) {
         val db = getDb() ?: return
         try {
-            val settingsMap = mapOf(
+            val settingsMap = mutableMapOf<String, Any>(
                 "storeName" to storeName,
                 "storePhone" to storePhone,
                 "storeWhatsapp" to storeWhatsapp,
                 "managerName" to managerName,
                 "updatedAt" to System.currentTimeMillis()
             )
+            if (workshopId.isNotBlank()) {
+                settingsMap["workshopId"] = workshopId
+            }
 
+            val docId = if (workshopId.isNotBlank()) workshopId else "config"
             db.collection("store_settings")
-                .document("config")
+                .document(docId)
                 .set(settingsMap, SetOptions.merge())
                 .addOnSuccessListener {
                     Log.d(TAG, "Store settings successfully synced to Firestore.")
@@ -829,7 +834,8 @@ object FirestoreSync {
     }
 
     fun syncAuditLogToFirestore(
-        log: AuditLog
+        log: AuditLog,
+        workshopId: String = ""
     ) {
         val db = getDb() ?: return
 
@@ -848,19 +854,21 @@ object FirestoreSync {
                 return
             }
 
-            val logMap =
-                mapOf(
-                    "workerId" to (
-                        log.workerId.ifBlank {
-                            currentUid
-                        }
-                    ),
-                    "workerName" to log.workerName,
-                    "action" to log.action,
-                    "projectId" to log.projectId,
-                    "projectName" to log.projectName,
-                    "timestamp" to log.timestamp
-                )
+            val logMap = mutableMapOf<String, Any>(
+                "workerId" to (
+                    log.workerId.ifBlank {
+                        currentUid
+                    }
+                ),
+                "workerName" to log.workerName,
+                "action" to log.action,
+                "projectId" to log.projectId,
+                "projectName" to log.projectName,
+                "timestamp" to log.timestamp
+            )
+            if (workshopId.isNotBlank()) {
+                logMap["workshopId"] = workshopId
+            }
 
             db.collection("audit_logs")
                 .add(logMap)

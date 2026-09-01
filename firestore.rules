@@ -2,7 +2,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ========================================
+    // HELPER FUNCTIONS
+    // ========================================
+
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -12,107 +15,209 @@ service cloud.firestore {
     }
 
     function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+        : {};
     }
 
     function isWorkshopMember(workshopId) {
-      return isAuthenticated() && (
+      return isAuthenticated() && workshopId != null && workshopId != "" && (
         getUserData().workshopId == workshopId ||
         exists(/databases/$(database)/documents/workshops/$(workshopId)/members/$(request.auth.uid))
       );
     }
 
-    // Users collection
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isUser(userId);
-      // User can update profile, BUT CANNOT change role, ownerId, or workshopId directly.
-      // Manager can update worker's workshopId when approving join requests.
-      // User can update workshopId if an approved join request exists.
-      allow update: if (
-        isUser(userId) && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId', 'workshopId']))
-      ) || (
-        isAuthenticated() &&
-        isWorkshopMember(request.resource.data.workshopId) &&
-        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId']))
-      ) || (
-        isUser(userId) &&
-        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId'])) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workshopId']) &&
-        exists(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
-        get(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved'
+    function isWorkshopManager(workshopId) {
+      return isAuthenticated() && workshopId != null && workshopId != "" && (
+        (exists(/databases/$(database)/documents/workshops/$(workshopId)) &&
+         get(/databases/$(database)/documents/workshops/$(workshopId)).data.ownerId == request.auth.uid) ||
+        (exists(/databases/$(database)/documents/workshops/$(workshopId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workshops/$(workshopId)/members/$(request.auth.uid)).data.role == 'admin') ||
+        (getUserData().workshopId == workshopId && (getUserData().role == 'ADMIN' || getUserData().role == 'admin'))
       );
     }
 
-    // Workshops collection
+    // ========================================
+    // 1. USERS COLLECTION
+    // ========================================
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        isUser(userId) ||
+        (resource.data.workshopId != "" && isWorkshopManager(resource.data.workshopId)) ||
+        (getUserData().workshopId != "" && getUserData().workshopId == resource.data.workshopId) ||
+        (resource.data.phone == request.auth.token.phone_number) ||
+        (resource.data.email == request.auth.token.email)
+      );
+
+      allow create: if isUser(userId) &&
+        request.resource.data.uid == userId;
+
+      allow update: if isAuthenticated() && (
+        (
+          isUser(userId) &&
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId', 'workshopId']))
+        ) ||
+        (
+          isUser(userId) &&
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId'])) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workshopId']) &&
+          (
+            (exists(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
+             get(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved') ||
+            (existsAfter(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
+             getAfter(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved')
+          )
+        ) ||
+        (
+          isWorkshopManager(request.resource.data.workshopId) &&
+          (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId'])) &&
+          (
+            (exists(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
+             get(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved') ||
+            (existsAfter(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
+             getAfter(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved')
+          )
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    // ========================================
+    // 2. WORKSHOPS COLLECTION & MEMBERS
+    // ========================================
     match /workshops/{workshopId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isWorkshopMember(workshopId);
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        isWorkshopManager(workshopId) &&
+        request.resource.data.ownerId == resource.data.ownerId;
+
+      allow delete: if isAuthenticated() && isWorkshopManager(workshopId);
 
       match /members/{memberId} {
-        allow read: if isAuthenticated();
-        // Allow write if caller is Manager of workshop OR if an approved join request exists for memberId
-        allow write: if isAuthenticated() && (
+        allow read: if isAuthenticated() && (
           isWorkshopMember(workshopId) ||
+          memberId == request.auth.uid
+        );
+
+        allow create, update: if isAuthenticated() && (
+          isWorkshopManager(workshopId) ||
           (
-            request.auth.uid == memberId &&
-            exists(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)) &&
-            get(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)).data.status == 'approved'
+            request.resource.data.role == 'worker' &&
+            (
+              (exists(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)) &&
+               get(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)).data.status == 'approved') ||
+              (existsAfter(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)) &&
+               getAfter(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)).data.status == 'approved')
+            )
           )
         );
+
+        allow delete: if isAuthenticated() && isWorkshopManager(workshopId);
       }
     }
 
-    // Join Requests collection (Firebase Spark Join Request Flow)
+    // ========================================
+    // 3. JOIN REQUESTS COLLECTION
+    // ========================================
     match /joinRequests/{requestId} {
       allow read: if isAuthenticated() && (
         resource.data.workerUid == request.auth.uid ||
-        isWorkshopMember(resource.data.workshopId)
+        isWorkshopManager(resource.data.workshopId) ||
+        getUserData().workshopId == resource.data.workshopId
       );
-      // Worker creating request: workerUid MUST equal request.auth.uid and status MUST be 'pending'
+
       allow create: if isAuthenticated() &&
         request.resource.data.workerUid == request.auth.uid &&
-        request.resource.data.status == 'pending';
+        request.resource.data.status == 'pending' &&
+        requestId == request.auth.uid + '_' + request.resource.data.workshopId;
 
-      // Updating request: Manager of workshopId can update status (approve or reject).
-      // Worker CANNOT approve their own request! (request.auth.uid != resource.data.workerUid)
       allow update: if isAuthenticated() &&
-        isWorkshopMember(resource.data.workshopId) &&
-        request.auth.uid != resource.data.workerUid;
+        isWorkshopManager(resource.data.workshopId) &&
+        request.auth.uid != resource.data.workerUid &&
+        request.resource.data.workerUid == resource.data.workerUid &&
+        request.resource.data.workshopId == resource.data.workshopId &&
+        request.resource.data.syncCode == resource.data.syncCode &&
+        resource.data.status == 'pending' &&
+        (request.resource.data.status == 'approved' || request.resource.data.status == 'rejected');
 
       allow delete: if isAuthenticated() && (
         resource.data.workerUid == request.auth.uid ||
-        isWorkshopMember(resource.data.workshopId)
+        isWorkshopManager(resource.data.workshopId)
       );
     }
 
-    // Projects collection
+    // ========================================
+    // 4. PROJECTS COLLECTION
+    // ========================================
     match /projects/{projectId} {
       allow read: if isAuthenticated() && (
         isWorkshopMember(resource.data.workshopId) ||
         resource.data.createdBy == request.auth.uid
       );
-      allow create: if isAuthenticated() && isWorkshopMember(request.resource.data.workshopId);
-      allow update, delete: if isAuthenticated() && isWorkshopMember(resource.data.workshopId);
+
+      allow create: if isAuthenticated() &&
+        isWorkshopMember(request.resource.data.workshopId);
+
+      allow update: if isAuthenticated() &&
+        isWorkshopMember(resource.data.workshopId) &&
+        request.resource.data.workshopId == resource.data.workshopId;
+
+      allow delete: if isAuthenticated() && isWorkshopMember(resource.data.workshopId);
     }
 
-    // Project items collection
+    // ========================================
+    // 5. PROJECT ITEMS COLLECTION
+    // ========================================
     match /project_items/{itemId} {
       allow read: if isAuthenticated() && (
         isWorkshopMember(resource.data.workshopId) ||
         resource.data.workerId == request.auth.uid
       );
-      allow create, update, delete: if isAuthenticated() && isWorkshopMember(request.resource.data.workshopId);
+
+      allow create: if isAuthenticated() &&
+        isWorkshopMember(request.resource.data.workshopId);
+
+      allow update: if isAuthenticated() &&
+        isWorkshopMember(resource.data.workshopId) &&
+        request.resource.data.workshopId == resource.data.workshopId;
+
+      allow delete: if isAuthenticated() && isWorkshopMember(resource.data.workshopId);
     }
 
-    // Store settings & Audit logs
+    // ========================================
+    // 6. STORE SETTINGS COLLECTION
+    // ========================================
     match /store_settings/{configId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        configId == getUserData().workshopId ||
+        configId == 'config' ||
+        (resource != null && isWorkshopMember(resource.data.workshopId))
+      );
+
+      allow write: if isAuthenticated() && (
+        isWorkshopManager(getUserData().workshopId) ||
+        (request.resource.data.workshopId != null && isWorkshopManager(request.resource.data.workshopId))
+      );
     }
 
+    // ========================================
+    // 7. AUDIT LOGS COLLECTION
+    // ========================================
     match /audit_logs/{logId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        (resource != null && isWorkshopMember(resource.data.workshopId)) ||
+        getUserData().role == 'ADMIN'
+      );
+
+      allow create: if isAuthenticated() &&
+        request.resource.data.workerId == request.auth.uid;
+
+      allow update, delete: if false;
     }
   }
 }
