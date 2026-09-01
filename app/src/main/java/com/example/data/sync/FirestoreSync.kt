@@ -898,46 +898,186 @@ object FirestoreSync {
      * workshops/{workshopId}/members/{workerUid} -> role: "worker"
      * users/{workerUid} -> workshopId
      */
-    fun joinWorkerToWorkshop(
-        workerUid: String,
+    /**
+     * إرسال طلب انضمام للورشة عبر Firestore (نظام Firebase Spark بدون Cloud Functions)
+     */
+    fun sendWorkerJoinRequest(
+        user: TeamUser,
         syncCode: String,
-        onResult: (Boolean, String, String) -> Unit
+        onResult: (Boolean, String) -> Unit
     ) {
-        val cleanCode = syncCode.trim().uppercase()
-        if (cleanCode.isBlank()) {
-            onResult(false, "رمز المزامنة فارغ", "")
+        val db = getDb()
+        if (db == null) {
+            onResult(false, "Cloud Firestore غير متصل")
             return
         }
 
-        val data = hashMapOf("syncCode" to cleanCode)
+        val cleanCode = syncCode.trim().uppercase()
+        if (cleanCode.isBlank()) {
+            onResult(false, "رمز المزامنة فارغ")
+            return
+        }
 
-        try {
-            com.google.firebase.functions.FirebaseFunctions.getInstance()
-                .getHttpsCallable("joinWorkshopBySyncCode")
-                .call(data)
-                .addOnSuccessListener { result ->
-                    @Suppress("UNCHECKED_CAST")
-                    val resData = result.data as? Map<String, Any>
-                    val success = resData?.get("success") as? Boolean ?: true
-                    val targetWorkshopId = resData?.get("workshopId") as? String ?: ""
-                    val msg = resData?.get("message") as? String ?: "تم الانضمام للورشة بنجاح 🎉"
-                    if (success && targetWorkshopId.isNotBlank()) {
-                        onResult(true, msg, targetWorkshopId)
-                    } else {
-                        onResult(false, msg.ifBlank { "رمز المزامنة غير صحيح، الورشة غير موجودة" }, "")
-                    }
+        db.collection("workshops")
+            .whereEqualTo("syncCode", cleanCode)
+            .get()
+            .addOnSuccessListener { snapshots ->
+                val workshopDoc = snapshots?.documents?.firstOrNull()
+                if (workshopDoc != null && workshopDoc.exists()) {
+                    val targetWorkshopId = workshopDoc.id
+                    createJoinRequestInFirestore(db, user, targetWorkshopId, cleanCode, onResult)
+                } else {
+                    db.collection("workshops").document(cleanCode).get()
+                        .addOnSuccessListener { directDoc ->
+                            if (directDoc.exists()) {
+                                createJoinRequestInFirestore(db, user, directDoc.id, cleanCode, onResult)
+                            } else {
+                                onResult(false, "رمز المزامنة غير صحيح، الورشة غير موجودة")
+                            }
+                        }
+                        .addOnFailureListener {
+                            onResult(false, "رمز المزامنة غير صحيح، الورشة غير موجودة")
+                        }
+                }
+            }
+            .addOnFailureListener { e ->
+                onResult(false, "فشل التحقق من الرمز: ${e.message}")
+            }
+    }
+
+    private fun createJoinRequestInFirestore(
+        db: FirebaseFirestore,
+        user: TeamUser,
+        targetWorkshopId: String,
+        cleanCode: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val requestId = "${user.uid}_$targetWorkshopId"
+        val requestRef = db.collection("joinRequests").document(requestId)
+
+        requestRef.get().addOnSuccessListener { doc ->
+            if (doc.exists()) {
+                val status = doc.getString("status") ?: ""
+                if (status == "pending") {
+                    onResult(false, "تم تقديم طلب الانضمام سابقاً، بانتظار موافقة مدير الورشة ⏳")
+                    return@addOnSuccessListener
+                } else if (status == "approved") {
+                    onResult(true, "أنت عضو بطلب مقبول في هذه الورشة بالفعل 🎉")
+                    return@addOnSuccessListener
+                }
+            }
+
+            val requestData = hashMapOf(
+                "requestId" to requestId,
+                "workerUid" to user.uid,
+                "workerName" to user.name,
+                "workerEmail" to user.email.ifBlank { user.phone },
+                "workshopId" to targetWorkshopId,
+                "syncCode" to cleanCode,
+                "status" to "pending",
+                "createdAt" to System.currentTimeMillis(),
+                "updatedAt" to System.currentTimeMillis()
+            )
+
+            requestRef.set(requestData)
+                .addOnSuccessListener {
+                    onResult(true, "تم إرسال طلب الانضمام بنجاح 🎉 بانتظار موافقة مدير الورشة.")
                 }
                 .addOnFailureListener { e ->
-                    val errMsg = e.message ?: ""
-                    if (errMsg.contains("INVALID_SYNC_CODE") || errMsg.contains("NOT_FOUND", ignoreCase = true)) {
-                        onResult(false, "رمز المزامنة غير صحيح، الورشة غير موجودة", "")
-                    } else {
-                        onResult(false, "فشل الانضمام للورشة: ${e.localizedMessage}", "")
-                    }
+                    onResult(false, "فشل إرسال طلب الانضمام: ${e.localizedMessage}")
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error invoking Cloud Function joinWorkshopBySyncCode: ${e.message}")
-            onResult(false, "فشل الاتصال بالخدمة السحابية: ${e.localizedMessage}", "")
+        }.addOnFailureListener { e ->
+            onResult(false, "فشل الاتصال بـ Firestore: ${e.localizedMessage}")
         }
+    }
+
+    /**
+     * الاستماع لطلبات الانضمام المعلقة الخاصة بورشة المدير
+     */
+    fun listenToPendingJoinRequests(
+        workshopId: String,
+        onRequestsUpdated: (List<Map<String, Any>>) -> Unit
+    ): ListenerRegistration? {
+        val db = getDb() ?: return null
+        if (workshopId.isBlank()) return null
+
+        return db.collection("joinRequests")
+            .whereEqualTo("workshopId", workshopId)
+            .whereEqualTo("status", "pending")
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val list = snapshots.documents.mapNotNull { doc -> doc.data }
+                onRequestsUpdated(list)
+            }
+    }
+
+    /**
+     * موافقة المدير على طلب الانضمام لورشة عمله
+     */
+    fun approveJoinRequest(
+        requestId: String,
+        workerUid: String,
+        workshopId: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val db = getDb()
+        if (db == null) {
+            onResult(false, "Cloud Firestore غير متصل")
+            return
+        }
+
+        val batch = db.batch()
+
+        val requestRef = db.collection("joinRequests").document(requestId)
+        batch.update(requestRef, mapOf(
+            "status" to "approved",
+            "updatedAt" to System.currentTimeMillis()
+        ))
+
+        val memberRef = db.collection("workshops").document(workshopId)
+            .collection("members").document(workerUid)
+        batch.set(memberRef, mapOf(
+            "role" to "worker",
+            "joinedAt" to System.currentTimeMillis()
+        ), SetOptions.merge())
+
+        val userRef = db.collection("users").document(workerUid)
+        batch.update(userRef, mapOf(
+            "workshopId" to workshopId
+        ))
+
+        batch.commit()
+            .addOnSuccessListener {
+                onResult(true, "تمت الموافقة على طلب العامل بنجاح 🎉")
+            }
+            .addOnFailureListener { e ->
+                onResult(false, "فشل قبول الطلب: ${e.localizedMessage}")
+            }
+    }
+
+    /**
+     * رفض طلب الانضمام
+     */
+    fun rejectJoinRequest(
+        requestId: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val db = getDb()
+        if (db == null) {
+            onResult(false, "Cloud Firestore غير متصل")
+            return
+        }
+
+        db.collection("joinRequests").document(requestId)
+            .update(mapOf(
+                "status" to "rejected",
+                "updatedAt" to System.currentTimeMillis()
+            ))
+            .addOnSuccessListener {
+                onResult(true, "تم رفض طلب الانضمام")
+            }
+            .addOnFailureListener { e ->
+                onResult(false, "فشل رفض الطلب: ${e.localizedMessage}")
+            }
     }
 }

@@ -46,6 +46,14 @@ fun SettingsScreen(
     val workersList by viewModel.workersList.collectAsState()
     val isManagerLoggedIn by viewModel.isManagerLoggedIn.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
+    val pendingRequests by viewModel.pendingJoinRequests.collectAsState()
+
+    LaunchedEffect(currentUser?.workshopId) {
+        val wId = currentUser?.workshopId?.ifBlank { SyncCodeManager.getSyncCode(context) } ?: ""
+        if (wId.isNotBlank()) {
+            viewModel.startPendingRequestsListener(wId)
+        }
+    }
 
     var storeNameInput by remember(currentStoreName) { mutableStateOf(currentStoreName) }
     var storePhoneInput by remember(currentStorePhone) { mutableStateOf(currentStorePhone) }
@@ -506,6 +514,80 @@ fun SettingsScreen(
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text("انضمام 🔗", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            if (pendingRequests.isNotEmpty()) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.tertiary),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Group, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "طلبات الانضمام المعلقة (${pendingRequests.size})",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        pendingRequests.forEach { req ->
+                            val requestId = req["requestId"] as? String ?: ""
+                            val workerUid = req["workerUid"] as? String ?: ""
+                            val workerName = req["workerName"] as? String ?: "عامل جديد"
+                            val workerEmail = req["workerEmail"] as? String ?: ""
+                            val workshopId = req["workshopId"] as? String ?: ""
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(workerName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        if (workerEmail.isNotBlank()) {
+                                            Text(workerEmail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Button(
+                                            onClick = {
+                                                viewModel.approveJoinRequest(requestId, workerUid, workshopId) { success, msg ->
+                                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            Text("قبول ✅", fontSize = 12.sp)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                viewModel.rejectJoinRequest(requestId) { success, msg ->
+                                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            Text("رفض ❌", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

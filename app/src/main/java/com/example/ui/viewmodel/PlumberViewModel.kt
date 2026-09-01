@@ -43,6 +43,11 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     private val _isUserLoggedIn = MutableStateFlow<Boolean>(false)
     val isUserLoggedIn: StateFlow<Boolean> = _isUserLoggedIn.asStateFlow()
 
+    private val _pendingJoinRequests = MutableStateFlow<List<Map<String, Any>>>(emptyList())
+    val pendingJoinRequests: StateFlow<List<Map<String, Any>>> = _pendingJoinRequests.asStateFlow()
+
+    private var pendingRequestsListener: com.google.firebase.firestore.ListenerRegistration? = null
+
     val allTeamUsers: StateFlow<List<TeamUser>>
     val allWorkers: StateFlow<List<TeamUser>>
     val allAuditLogs: StateFlow<List<AuditLog>>
@@ -341,6 +346,15 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         authPrefs.edit().remove("logged_uid").apply()
     }
 
+    fun startPendingRequestsListener(workshopId: String) {
+        pendingRequestsListener?.remove()
+        if (workshopId.isNotBlank()) {
+            pendingRequestsListener = FirestoreSync.listenToPendingJoinRequests(workshopId) { list ->
+                _pendingJoinRequests.value = list
+            }
+        }
+    }
+
     fun connectWorkerToWorkshopWithSyncCode(syncCode: String, onResult: (Boolean, String) -> Unit) {
         val user = _currentUser.value
         if (user == null) {
@@ -348,23 +362,38 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         viewModelScope.launch {
-            FirestoreSync.joinWorkerToWorkshop(user.uid, syncCode) { success, msg, targetWorkshopId ->
-                if (success && targetWorkshopId.isNotBlank()) {
-                    val updated = user.copy(workshopId = targetWorkshopId)
-                    viewModelScope.launch {
-                        repository.insertOrUpdateTeamUser(updated)
-                        _currentUser.value = updated
-                        FirestoreSync.startRealtimeListener(
-                            getApplication(),
-                            updated.role,
-                            updated.uid,
-                            updated.workshopId
-                        )
-                        onResult(true, msg)
-                    }
-                } else {
-                    onResult(false, msg)
+            FirestoreSync.sendWorkerJoinRequest(user, syncCode) { success, msg ->
+                onResult(success, msg)
+            }
+        }
+    }
+
+    fun approveJoinRequest(
+        requestId: String,
+        workerUid: String,
+        workshopId: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            FirestoreSync.approveJoinRequest(requestId, workerUid, workshopId) { success, msg ->
+                if (success) {
+                    _pendingJoinRequests.value = _pendingJoinRequests.value.filterNot { it["requestId"] == requestId }
                 }
+                onResult(success, msg)
+            }
+        }
+    }
+
+    fun rejectJoinRequest(
+        requestId: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            FirestoreSync.rejectJoinRequest(requestId) { success, msg ->
+                if (success) {
+                    _pendingJoinRequests.value = _pendingJoinRequests.value.filterNot { it["requestId"] == requestId }
+                }
+                onResult(success, msg)
             }
         }
     }

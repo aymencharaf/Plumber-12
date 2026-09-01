@@ -167,7 +167,6 @@ dependencies {
     implementation(libs.firebase.ai)
     implementation(libs.firebase.firestore)
     implementation(libs.firebase.auth)
-    implementation(libs.firebase.functions)
     implementation(libs.firebase.appcheck.recaptcha)
 
     implementation(libs.kotlinx.coroutines.android)

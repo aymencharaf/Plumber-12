@@ -26,9 +26,22 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated();
       allow create: if isUser(userId);
-      // Prevent changing role, ownerId, or workshopId maliciously from client
-      allow update: if isUser(userId) &&
-        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId', 'workshopId']));
+      // User can update profile, BUT CANNOT change role, ownerId, or workshopId directly.
+      // Manager can update worker's workshopId when approving join requests.
+      // User can update workshopId if an approved join request exists.
+      allow update: if (
+        isUser(userId) && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId', 'workshopId']))
+      ) || (
+        isAuthenticated() &&
+        isWorkshopMember(request.resource.data.workshopId) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId']))
+      ) || (
+        isUser(userId) &&
+        (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'ownerId'])) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['workshopId']) &&
+        exists(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)) &&
+        get(/databases/$(database)/documents/joinRequests/$(userId + '_' + request.resource.data.workshopId)).data.status == 'approved'
+      );
     }
 
     // Workshops collection
@@ -39,10 +52,39 @@ service cloud.firestore {
 
       match /members/{memberId} {
         allow read: if isAuthenticated();
-        // Workers cannot add themselves to arbitrary workshops directly.
-        // Joining must go through the secure Cloud Function (joinWorkshopBySyncCode).
-        allow write: if isAuthenticated() && isWorkshopMember(workshopId);
+        // Allow write if caller is Manager of workshop OR if an approved join request exists for memberId
+        allow write: if isAuthenticated() && (
+          isWorkshopMember(workshopId) ||
+          (
+            request.auth.uid == memberId &&
+            exists(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)) &&
+            get(/databases/$(database)/documents/joinRequests/$(memberId + '_' + workshopId)).data.status == 'approved'
+          )
+        );
       }
+    }
+
+    // Join Requests collection (Firebase Spark Join Request Flow)
+    match /joinRequests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.workerUid == request.auth.uid ||
+        isWorkshopMember(resource.data.workshopId)
+      );
+      // Worker creating request: workerUid MUST equal request.auth.uid and status MUST be 'pending'
+      allow create: if isAuthenticated() &&
+        request.resource.data.workerUid == request.auth.uid &&
+        request.resource.data.status == 'pending';
+
+      // Updating request: Manager of workshopId can update status (approve or reject).
+      // Worker CANNOT approve their own request! (request.auth.uid != resource.data.workerUid)
+      allow update: if isAuthenticated() &&
+        isWorkshopMember(resource.data.workshopId) &&
+        request.auth.uid != resource.data.workerUid;
+
+      allow delete: if isAuthenticated() && (
+        resource.data.workerUid == request.auth.uid ||
+        isWorkshopMember(resource.data.workshopId)
+      );
     }
 
     // Projects collection
