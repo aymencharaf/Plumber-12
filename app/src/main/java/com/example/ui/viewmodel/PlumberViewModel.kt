@@ -1,4 +1,3 @@
-```kotlin
 package com.example.ui.viewmodel
 
 import android.app.Application
@@ -24,7 +23,9 @@ import com.example.data.repository.MaterialRepository
 import com.example.data.repository.PlumberRepository
 import com.example.data.sync.FirestoreSync
 
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
@@ -49,14 +50,22 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         FirebaseAuth.getInstance()
     }
 
+    companion object {
+        private const val SECONDARY_FIREBASE_APP_NAME =
+            "PlumberAdminSecondaryAuth"
+    }
+
     val libraryMaterials: StateFlow<List<MaterialEntity>>
 
     // ============================================================
     // TEAM USER STATE & RBAC
     // ============================================================
 
-    private val _currentUser = MutableStateFlow<TeamUser?>(null)
-    val currentUser: StateFlow<TeamUser?> = _currentUser.asStateFlow()
+    private val _currentUser =
+        MutableStateFlow<TeamUser?>(null)
+
+    val currentUser: StateFlow<TeamUser?> =
+        _currentUser.asStateFlow()
 
     private val _currentRole =
         MutableStateFlow<String>("WORKER")
@@ -180,6 +189,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         estimatedGlueOrSolder: String,
         generatedMaterialsJson: String
     ) {
+
         viewModelScope.launch {
 
             val cache =
@@ -200,6 +210,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteCalculationCache(id: Long) {
+
         viewModelScope.launch {
             repository.deleteCalculatedMaterialCache(id)
         }
@@ -207,15 +218,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
     // ============================================================
     // DEFAULT USERS
-    // ============================================================
-    //
-    // ملاحظة:
-    // هذه البيانات القديمة ليست Firebase Authentication accounts.
-    //
-    // إذا كانت الحسابات admin_001 / worker_001 مستخدمة فقط
-    // داخل التطبيق القديم، يمكن الاحتفاظ بها مؤقتاً في Room.
-    //
-    // لا يتم استخدام password منها لمصادقة Firebase.
     // ============================================================
 
     private suspend fun seedDefaultTeamUsersIfEmpty() {
@@ -278,7 +280,97 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // ============================================================
-    // RESTORE LOGIN SESSION
+    // FIREBASE EMAIL HELPER
+    // ============================================================
+
+    private fun getFirebaseEmail(
+        input: String,
+        localUser: TeamUser? = null
+    ): String {
+
+        val cleanInput =
+            input.trim()
+
+        if (
+            android.util.Patterns.EMAIL_ADDRESS
+                .matcher(cleanInput)
+                .matches()
+        ) {
+            return cleanInput
+        }
+
+        val savedEmail =
+            localUser?.email?.trim().orEmpty()
+
+        if (
+            savedEmail.isNotBlank() &&
+            android.util.Patterns.EMAIL_ADDRESS
+                .matcher(savedEmail)
+                .matches()
+        ) {
+            return savedEmail
+        }
+
+        return "${cleanInput.replace(" ", "")}@plumber.com"
+    }
+
+    // ============================================================
+    // FIREBASE ERROR MESSAGE
+    // ============================================================
+
+    private fun getFirebaseErrorMessage(
+        exception: Exception
+    ): String {
+
+        val errorCode =
+            (exception as? FirebaseAuthException)
+                ?.errorCode
+                ?.uppercase()
+                ?: ""
+
+        return when {
+
+            errorCode.contains("USER_NOT_FOUND") ->
+                "لا يوجد حساب بهذا البريد الإلكتروني أو رقم الهاتف."
+
+            errorCode.contains("WRONG_PASSWORD") ->
+                "كلمة المرور غير صحيحة."
+
+            errorCode.contains("INVALID_CREDENTIAL") ->
+                "البريد الإلكتروني أو كلمة المرور غير صحيحة."
+
+            errorCode.contains("INVALID_EMAIL") ->
+                "البريد الإلكتروني غير صالح."
+
+            errorCode.contains("EMAIL_ALREADY_IN_USE") ->
+                "هذا البريد الإلكتروني مستخدم بالفعل."
+
+            errorCode.contains("WEAK_PASSWORD") ->
+                "كلمة المرور ضعيفة. يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
+
+            errorCode.contains("NETWORK") ->
+                "تعذر الاتصال بـ Firebase. تحقق من اتصال الإنترنت."
+
+            errorCode.contains("TOO_MANY_REQUESTS") ->
+                "تمت محاولات كثيرة. حاول مرة أخرى لاحقاً."
+
+            exception is FirebaseAuthInvalidCredentialsException ->
+                "بيانات تسجيل الدخول غير صحيحة."
+
+            exception is FirebaseAuthWeakPasswordException ->
+                "كلمة المرور ضعيفة. يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
+
+            exception is FirebaseAuthUserCollisionException ->
+                "هذا الحساب موجود بالفعل في Firebase Authentication."
+
+            else ->
+                exception.localizedMessage
+                    ?: "حدث خطأ غير معروف في Firebase Authentication."
+        }
+    }
+
+    // ============================================================
+    // RESTORE FIREBASE SESSION
     // ============================================================
 
     private suspend fun restoreLoginSession() {
@@ -296,94 +388,92 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 "Firebase session found. UID=$firebaseUid"
             )
 
-            var user =
+            val user =
                 repository.getUserByUid(firebaseUid)
 
-            /*
-             * إذا كان الحساب موجوداً في Firebase Authentication
-             * لكن لم يتم تخزين TeamUser محلياً بعد،
-             * نحاول جلبه من Firestore.
-             */
-            if (user == null) {
+            if (user != null) {
 
-                FirestoreSync.fetchUserFromFirestoreByPhoneOrEmail(
-                    firebaseUser.email ?: ""
-                ) { fetchedUser ->
+                if (!user.active) {
 
-                    if (fetchedUser != null) {
+                    firebaseAuth.signOut()
 
-                        viewModelScope.launch {
+                    authPrefs.edit()
+                        .remove("logged_uid")
+                        .apply()
 
-                            /*
-                             * نضمن استخدام UID الحقيقي من Firebase.
-                             */
-                            val correctedUser =
-                                fetchedUser.copy(
-                                    uid = firebaseUid
-                                )
-
-                            repository.insertOrUpdateTeamUser(
-                                correctedUser
-                            )
-
-                            restoreUserIntoSession(
-                                correctedUser
-                            )
-                        }
-                    }
+                    return
                 }
 
-                return
-            }
-
-            if (!user.active) {
-
-                firebaseAuth.signOut()
-
-                authPrefs.edit()
-                    .remove("logged_uid")
-                    .apply()
+                restoreUserIntoSession(
+                    user.copy(
+                        uid = firebaseUid,
+                        password = ""
+                    )
+                )
 
                 return
             }
 
-            restoreUserIntoSession(user)
+            /*
+             * المستخدم موجود في Firebase Authentication
+             * لكن لا يوجد في Room.
+             *
+             * نحاول العثور عليه في Firestore.
+             */
+            val firebaseEmail =
+                firebaseUser.email.orEmpty()
+
+            if (firebaseEmail.isNotBlank()) {
+
+                FirestoreSync
+                    .fetchUserFromFirestoreByPhoneOrEmail(
+                        firebaseEmail
+                    ) { fetchedUser ->
+
+                        if (fetchedUser != null) {
+
+                            viewModelScope.launch {
+
+                                val correctedUser =
+                                    fetchedUser.copy(
+                                        uid = firebaseUid,
+                                        password = ""
+                                    )
+
+                                repository
+                                    .insertOrUpdateTeamUser(
+                                        correctedUser
+                                    )
+
+                                if (correctedUser.active) {
+
+                                    restoreUserIntoSession(
+                                        correctedUser
+                                    )
+
+                                } else {
+
+                                    firebaseAuth.signOut()
+
+                                    authPrefs.edit()
+                                        .remove("logged_uid")
+                                        .apply()
+                                }
+                            }
+                        }
+                    }
+            }
 
             return
         }
 
         /*
-         * جلسة قديمة من النظام السابق.
-         *
-         * نقرأها فقط إذا لم يكن Firebase Auth
-         * لديه مستخدم حالي.
+         * إذا لم توجد جلسة Firebase،
+         * نحذف أي جلسة قديمة محفوظة محلياً.
          */
-        val savedUid =
-            authPrefs.getString(
-                "logged_uid",
-                null
-            )
-
-        if (!savedUid.isNullOrEmpty()) {
-
-            val user =
-                repository.getUserByUid(savedUid)
-
-            if (user != null && user.active) {
-
-                /*
-                 * لا نعتبر هذا دخول Firebase حقيقياً.
-                 * لذلك لا نفتح جلسة قديمة إلا بشكل مؤقت.
-                 *
-                 * بعد الانتقال الكامل إلى Firebase Auth
-                 * ستختفي هذه الحالة تدريجياً.
-                 */
-                Log.w(
-                    "PlumberViewModel",
-                    "Legacy local session detected for UID=$savedUid"
-                )
-            }
-        }
+        authPrefs.edit()
+            .remove("logged_uid")
+            .apply()
     }
 
     private fun restoreUserIntoSession(
@@ -421,7 +511,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // ============================================================
-    // LOGIN
+    // LOGIN WITH FIREBASE AUTHENTICATION
     // ============================================================
 
     fun loginTeamUser(
@@ -449,36 +539,43 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        if (cleanPass.length < 6) {
+
+            onResult(
+                false,
+                "كلمة المرور يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
+            )
+
+            return
+        }
+
         viewModelScope.launch {
 
             try {
 
                 /*
-                 * إذا أدخل المستخدم رقم الهاتف،
-                 * نحوله إلى البريد الاصطناعي المستخدم
-                 * في Firebase Authentication.
-                 *
-                 * مثال:
-                 *
-                 * 0661234567
-                 * ↓
-                 * 0661234567@plumber.com
+                 * نبحث عن المستخدم محلياً فقط للحصول على
+                 * البريد الحقيقي إذا كان المستخدم يدخل برقم الهاتف.
                  */
-
-                val firebaseEmail =
-                    if (
-                        android.util.Patterns.EMAIL_ADDRESS
-                            .matcher(cleanInput)
-                            .matches()
-                    ) {
+                val localUser =
+                    repository.getUserByPhoneOrEmail(
                         cleanInput
-                    } else {
-                        "$cleanInput@plumber.com"
-                    }
+                    )
+
+                /*
+                 * إذا كان المستخدم من النظام القديم،
+                 * لا نحاول استخدام كلمة مرور Room
+                 * مع الحسابات الجديدة.
+                 */
+                val firebaseEmail =
+                    getFirebaseEmail(
+                        cleanInput,
+                        localUser
+                    )
 
                 Log.d(
                     "PlumberViewModel",
-                    "Attempting Firebase login with $firebaseEmail"
+                    "Firebase login: $firebaseEmail"
                 )
 
                 firebaseAuth
@@ -499,7 +596,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                                     onResult(
                                         false,
-                                        "تعذر الحصول على حساب Firebase."
+                                        "تعذر الحصول على بيانات حساب Firebase."
                                     )
 
                                     return@launch
@@ -508,73 +605,182 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                 val firebaseUid =
                                     firebaseUser.uid
 
+                                Log.d(
+                                    "PlumberViewModel",
+                                    "Firebase login successful. UID=$firebaseUid"
+                                )
+
                                 /*
-                                 * البحث أولاً بالـUID الحقيقي.
+                                 * أولاً نبحث بالـ UID الحقيقي.
                                  */
                                 var user =
                                     repository.getUserByUid(
                                         firebaseUid
                                     )
 
-                                /*
-                                 * إذا لم يكن موجوداً محلياً،
-                                 * نبحث في Firestore عن البريد.
-                                 */
-                                if (user == null) {
+                                if (user != null) {
 
-                                    FirestoreSync
-                                        .fetchUserFromFirestoreByPhoneOrEmail(
-                                            firebaseUser.email
-                                                ?: firebaseEmail
-                                        ) { fetchedUser ->
-
-                                            if (fetchedUser != null) {
-
-                                                viewModelScope.launch {
-
-                                                    val correctedUser =
-                                                        fetchedUser.copy(
-                                                            uid = firebaseUid,
-                                                            password = ""
-                                                        )
-
-                                                    repository
-                                                        .insertOrUpdateTeamUser(
-                                                            correctedUser
-                                                        )
-
-                                                    processFirebaseUserLogin(
-                                                        correctedUser,
-                                                        onResult
-                                                    )
-                                                }
-
-                                            } else {
-
-                                                onResult(
-                                                    false,
-                                                    "تم تسجيل الدخول إلى Firebase لكن بيانات العامل غير موجودة في Firestore."
-                                                )
-                                            }
-                                        }
+                                    processFirebaseUserLogin(
+                                        user.copy(
+                                            uid = firebaseUid,
+                                            password = ""
+                                        ),
+                                        onResult
+                                    )
 
                                     return@launch
                                 }
 
                                 /*
-                                 * كلمة المرور لا تأتي من Room.
-                                 * Firebase Authentication تحقق منها.
+                                 * إذا لم يوجد في Room،
+                                 * نبحث في Firestore.
                                  */
-                                user =
-                                    user.copy(
-                                        uid = firebaseUid,
-                                        password = ""
-                                    )
+                                FirestoreSync
+                                    .fetchUserFromFirestoreByPhoneOrEmail(
+                                        cleanInput
+                                    ) { fetchedUser ->
 
-                                processFirebaseUserLogin(
-                                    user,
-                                    onResult
-                                )
+                                        viewModelScope.launch {
+
+                                            if (fetchedUser == null) {
+
+                                                /*
+                                                 * تجربة البحث بواسطة
+                                                 * بريد Firebase أيضاً.
+                                                 */
+                                                FirestoreSync
+                                                    .fetchUserFromFirestoreByPhoneOrEmail(
+                                                        firebaseEmail
+                                                    ) { emailUser ->
+
+                                                        viewModelScope.launch {
+
+                                                            if (emailUser == null) {
+
+                                                                /*
+                                                                 * Auth موجود ولكن بيانات
+                                                                 * TeamUser غير موجودة.
+                                                                 *
+                                                                 * ننشئ Worker افتراضياً.
+                                                                 */
+                                                                val phone =
+                                                                    if (
+                                                                        !cleanInput.contains(
+                                                                            "@"
+                                                                        )
+                                                                    ) {
+                                                                        cleanInput
+                                                                    } else {
+                                                                        ""
+                                                                    }
+
+                                                                val newUser =
+                                                                    TeamUser(
+                                                                        uid = firebaseUid,
+                                                                        name =
+                                                                            firebaseUser.displayName
+                                                                                ?: "مستخدم جديد",
+                                                                        phone =
+                                                                            phone,
+                                                                        email =
+                                                                            firebaseUser.email
+                                                                                ?: firebaseEmail,
+                                                                        password = "",
+                                                                        role = "WORKER",
+                                                                        active = true,
+                                                                        workshopId = "",
+                                                                        createdAt =
+                                                                            System.currentTimeMillis(),
+                                                                        lastLoginAt =
+                                                                            System.currentTimeMillis()
+                                                                    )
+
+                                                                repository
+                                                                    .insertOrUpdateTeamUser(
+                                                                        newUser
+                                                                    )
+
+                                                                FirestoreSync
+                                                                    .syncUserToFirestore(
+                                                                        newUser
+                                                                    )
+
+                                                                processFirebaseUserLogin(
+                                                                    newUser,
+                                                                    onResult
+                                                                )
+
+                                                            } else {
+
+                                                                if (
+                                                                    emailUser.uid !=
+                                                                    firebaseUid
+                                                                ) {
+
+                                                                    firebaseAuth.signOut()
+
+                                                                    onResult(
+                                                                        false,
+                                                                        "خطأ: UID في Firestore لا يطابق UID في Firebase Authentication."
+                                                                    )
+
+                                                                    return@launch
+                                                                }
+
+                                                                val correctedUser =
+                                                                    emailUser.copy(
+                                                                        uid = firebaseUid,
+                                                                        password = ""
+                                                                    )
+
+                                                                repository
+                                                                    .insertOrUpdateTeamUser(
+                                                                        correctedUser
+                                                                    )
+
+                                                                processFirebaseUserLogin(
+                                                                    correctedUser,
+                                                                    onResult
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+
+                                                return@launch
+                                            }
+
+                                            if (
+                                                fetchedUser.uid !=
+                                                firebaseUid
+                                            ) {
+
+                                                firebaseAuth.signOut()
+
+                                                onResult(
+                                                    false,
+                                                    "خطأ: UID في Firestore لا يطابق UID في Firebase Authentication."
+                                                )
+
+                                                return@launch
+                                            }
+
+                                            val correctedUser =
+                                                fetchedUser.copy(
+                                                    uid = firebaseUid,
+                                                    password = ""
+                                                )
+
+                                            repository
+                                                .insertOrUpdateTeamUser(
+                                                    correctedUser
+                                                )
+
+                                            processFirebaseUserLogin(
+                                                correctedUser,
+                                                onResult
+                                            )
+                                        }
+                                    }
 
                             } catch (e: Exception) {
 
@@ -586,54 +792,25 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                                 onResult(
                                     false,
-                                    "حدث خطأ بعد تسجيل الدخول: ${e.localizedMessage}"
+                                    "حدث خطأ بعد تسجيل الدخول: ${
+                                        e.localizedMessage
+                                            ?: "خطأ غير معروف"
+                                    }"
                                 )
                             }
                         }
                     }
                     .addOnFailureListener { e ->
 
-                        val message =
-                            when (e) {
-
-                                is FirebaseAuthInvalidCredentialsException ->
-                                    "البريد الإلكتروني أو كلمة المرور غير صحيحة."
-
-                                else ->
-                                    when {
-                                        e.message?.contains(
-                                            "no user record",
-                                            ignoreCase = true
-                                        ) == true ->
-                                            "هذا الحساب غير موجود في Firebase Authentication."
-
-                                        e.message?.contains(
-                                            "password is invalid",
-                                            ignoreCase = true
-                                        ) == true ->
-                                            "كلمة المرور غير صحيحة."
-
-                                        e.message?.contains(
-                                            "network",
-                                            ignoreCase = true
-                                        ) == true ->
-                                            "تعذر الاتصال بـ Firebase. تحقق من الإنترنت."
-
-                                        else ->
-                                            e.localizedMessage
-                                                ?: "فشل تسجيل الدخول."
-                                    }
-                            }
-
                         Log.e(
                             "PlumberViewModel",
-                            "Firebase login failed: ${e.message}",
+                            "Firebase login failed",
                             e
                         )
 
                         onResult(
                             false,
-                            message
+                            getFirebaseErrorMessage(e)
                         )
                     }
 
@@ -641,22 +818,59 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                 Log.e(
                     "PlumberViewModel",
-                    "loginTeamUser error: ${e.message}",
+                    "loginTeamUser error",
                     e
                 )
 
                 onResult(
                     false,
-                    "حدث خطأ أثناء تسجيل الدخول: ${e.localizedMessage}"
+                    "حدث خطأ أثناء تسجيل الدخول: ${
+                        e.localizedMessage
+                            ?: "خطأ غير معروف"
+                    }"
                 )
             }
         }
     }
 
+    // ============================================================
+    // PROCESS FIREBASE LOGIN
+    // ============================================================
+
     private suspend fun processFirebaseUserLogin(
         user: TeamUser,
         onResult: (Boolean, String) -> Unit
     ) {
+
+        val currentFirebaseUser =
+            firebaseAuth.currentUser
+
+        if (currentFirebaseUser == null) {
+
+            onResult(
+                false,
+                "لا توجد جلسة Firebase صالحة."
+            )
+
+            return
+        }
+
+        if (currentFirebaseUser.uid != user.uid) {
+
+            Log.e(
+                "PlumberViewModel",
+                "UID mismatch. Firebase=${currentFirebaseUser.uid}, Local=${user.uid}"
+            )
+
+            firebaseAuth.signOut()
+
+            onResult(
+                false,
+                "حساب Firebase لا يتطابق مع بيانات المستخدم."
+            )
+
+            return
+        }
 
         if (!user.active) {
 
@@ -670,16 +884,23 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        /*
+         * لا نخزن كلمة المرور.
+         */
         val updatedUser =
             user.copy(
                 password = "",
-                lastLoginAt = System.currentTimeMillis()
+                lastLoginAt =
+                    System.currentTimeMillis()
             )
 
         repository.insertOrUpdateTeamUser(
             updatedUser
         )
 
+        /*
+         * syncUserToFirestore لا يرسل password.
+         */
         FirestoreSync.syncUserToFirestore(
             updatedUser
         )
@@ -703,7 +924,13 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             )
             .apply()
 
-        if (updatedUser.workshopId.isNotBlank()) {
+        /*
+         * تشغيل المزامنة فقط إذا كان العامل مربوطاً
+         * بورشة.
+         */
+        if (
+            updatedUser.workshopId.isNotBlank()
+        ) {
 
             FirestoreSync.startRealtimeListener(
                 getApplication(),
@@ -744,19 +971,17 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         val cleanPhone =
             phone.trim()
+                .replace(" ", "")
 
-        val cleanInputEmail =
+        val cleanEmailInput =
             email.trim()
 
         val cleanPassword =
             pass.trim()
 
         val cleanRole =
-            role.trim().uppercase()
-
-        // --------------------------------------------------------
-        // Validation
-        // --------------------------------------------------------
+            role.trim()
+                .uppercase()
 
         if (
             cleanName.isBlank() ||
@@ -786,10 +1011,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             try {
 
-                // ------------------------------------------------
-                // Check phone locally
-                // ------------------------------------------------
-
                 val existingByPhone =
                     repository.getUserByPhoneOrEmail(
                         cleanPhone
@@ -799,26 +1020,18 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                     onResult(
                         false,
-                        "رقم الهاتف ($cleanPhone) مسجل بالفعل في النظام."
+                        "رقم الهاتف ($cleanPhone) مسجل بالفعل."
                     )
 
                     return@launch
                 }
 
-                // ------------------------------------------------
-                // Determine Firebase email
-                // ------------------------------------------------
-
                 val firebaseEmail =
-                    if (cleanInputEmail.isBlank()) {
+                    if (cleanEmailInput.isBlank()) {
                         "$cleanPhone@plumber.com"
                     } else {
-                        cleanInputEmail
+                        cleanEmailInput
                     }
-
-                // ------------------------------------------------
-                // Validate email
-                // ------------------------------------------------
 
                 if (
                     !android.util.Patterns.EMAIL_ADDRESS
@@ -834,14 +1047,25 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     return@launch
                 }
 
+                val existingByEmail =
+                    repository.getUserByPhoneOrEmail(
+                        firebaseEmail
+                    )
+
+                if (existingByEmail != null) {
+
+                    onResult(
+                        false,
+                        "البريد الإلكتروني مستخدم بالفعل."
+                    )
+
+                    return@launch
+                }
+
                 Log.d(
                     "PlumberViewModel",
-                    "Creating Firebase worker account: $firebaseEmail"
+                    "Creating Firebase account: $firebaseEmail"
                 )
-
-                // ------------------------------------------------
-                // Create Firebase Authentication account
-                // ------------------------------------------------
 
                 firebaseAuth
                     .createUserWithEmailAndPassword(
@@ -861,27 +1085,19 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                                     onResult(
                                         false,
-                                        "تم إنشاء الحساب ولكن تعذر الحصول على UID من Firebase."
+                                        "تم إنشاء الحساب ولكن تعذر الحصول على UID."
                                     )
 
                                     return@launch
                                 }
-
-                                // =================================
-                                // REAL FIREBASE UID
-                                // =================================
 
                                 val firebaseUid =
                                     firebaseUser.uid
 
                                 Log.d(
                                     "PlumberViewModel",
-                                    "Firebase worker created successfully. UID=$firebaseUid"
+                                    "Worker Firebase UID=$firebaseUid"
                                 )
-
-                                // =================================
-                                // TeamUser
-                                // =================================
 
                                 val newUser =
                                     TeamUser(
@@ -893,50 +1109,37 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                         role = cleanRole,
                                         active = true,
                                         workshopId = "",
-                                        createdAt = System.currentTimeMillis(),
-                                        lastLoginAt = System.currentTimeMillis()
+                                        createdAt =
+                                            System.currentTimeMillis(),
+                                        lastLoginAt =
+                                            System.currentTimeMillis()
                                     )
-
-                                // =================================
-                                // Room
-                                // =================================
 
                                 repository
                                     .insertOrUpdateTeamUser(
                                         newUser
                                     )
 
-                                // =================================
-                                // Firestore
-                                // =================================
-                                //
-                                // syncUserToFirestore() لا يرسل password.
-                                //
-
                                 FirestoreSync
                                     .syncUserToFirestore(
                                         newUser
                                     )
 
-                                // =================================
-                                // Workers list
-                                // =================================
-
                                 val updatedList =
                                     _workersList.value
                                         .toMutableList()
 
-                                val entryStr =
+                                val entry =
                                     "${newUser.name} (${newUser.phone})"
 
                                 if (
                                     !updatedList.contains(
-                                        entryStr
+                                        entry
                                     )
                                 ) {
 
                                     updatedList.add(
-                                        entryStr
+                                        entry
                                     )
 
                                     updateWorkersList(
@@ -944,20 +1147,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                     )
                                 }
 
-                                // =================================
-                                // Audit
-                                // =================================
-
-                                logAuditAction(
-                                    "تسجيل حساب عامل جديد في Firebase: ${newUser.name} (${newUser.role})",
-                                    0,
-                                    ""
-                                )
-
-                                // =================================
-                                // Auto Login
-                                // =================================
-
+                                /*
+                                 * createUserWithEmailAndPassword
+                                 * يسجل المستخدم الجديد تلقائياً.
+                                 */
                                 if (autoLogin) {
 
                                     _currentUser.value =
@@ -979,14 +1172,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                         )
                                         .apply()
 
-                                    /*
-                                     * workshopId فارغ في البداية.
-                                     *
-                                     * بعد موافقة المدير على طلب
-                                     * الانضمام سيتم وضع workshopId.
-                                     */
                                     if (
-                                        newUser.workshopId.isNotBlank()
+                                        newUser.workshopId
+                                            .isNotBlank()
                                     ) {
 
                                         FirestoreSync
@@ -999,58 +1187,45 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                     }
                                 }
 
+                                logAuditAction(
+                                    "تسجيل حساب عامل جديد في Firebase: ${newUser.name}",
+                                    0,
+                                    ""
+                                )
+
                                 onResult(
                                     true,
-                                    "تم إنشاء حساب العامل ${newUser.name} بنجاح وربطه بـ Firebase Authentication وFirestore! 🟢"
+                                    "تم إنشاء حساب العامل ${newUser.name} بنجاح! 🟢"
                                 )
 
                             } catch (e: Exception) {
 
                                 Log.e(
                                     "PlumberViewModel",
-                                    "Error saving Firebase worker: ${e.message}",
+                                    "Error saving new worker",
                                     e
                                 )
 
-                                /*
-                                 * الحساب قد يكون موجوداً بالفعل في Firebase.
-                                 * لذلك لا نقوم بإنشاء حساب آخر تلقائياً.
-                                 */
                                 onResult(
                                     false,
-                                    "تم إنشاء حساب Firebase ولكن حدث خطأ أثناء حفظ بيانات العامل: ${e.localizedMessage}"
+                                    "تم إنشاء حساب Firebase ولكن حدث خطأ في حفظ بيانات العامل: ${
+                                        e.localizedMessage
+                                    }"
                                 )
                             }
                         }
                     }
                     .addOnFailureListener { e ->
 
-                        val message =
-                            when (e) {
-
-                                is FirebaseAuthUserCollisionException ->
-                                    "هذا البريد الإلكتروني مسجل بالفعل في Firebase Authentication."
-
-                                is FirebaseAuthWeakPasswordException ->
-                                    "كلمة المرور ضعيفة. يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
-
-                                is FirebaseAuthInvalidCredentialsException ->
-                                    "البريد الإلكتروني غير صالح."
-
-                                else ->
-                                    e.localizedMessage
-                                        ?: "فشل إنشاء حساب Firebase."
-                            }
-
                         Log.e(
                             "PlumberViewModel",
-                            "Firebase registration failed: ${e.message}",
+                            "Worker registration failed",
                             e
                         )
 
                         onResult(
                             false,
-                            message
+                            getFirebaseErrorMessage(e)
                         )
                     }
 
@@ -1058,15 +1233,64 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                 Log.e(
                     "PlumberViewModel",
-                    "registerWorkerAccount error: ${e.message}",
+                    "registerWorkerAccount error",
                     e
                 )
 
                 onResult(
                     false,
-                    "حدث خطأ أثناء إنشاء الحساب: ${e.localizedMessage}"
+                    "حدث خطأ أثناء إنشاء الحساب: ${
+                        e.localizedMessage
+                    }"
                 )
             }
+        }
+    }
+
+    // ============================================================
+    // SECONDARY FIREBASE AUTH
+    // ============================================================
+
+    private fun getSecondaryFirebaseAuth(): FirebaseAuth? {
+
+        return try {
+
+            val context =
+                getApplication<Application>()
+
+            val secondaryApp =
+                try {
+
+                    FirebaseApp.getInstance(
+                        SECONDARY_FIREBASE_APP_NAME
+                    )
+
+                } catch (_: IllegalStateException) {
+
+                    FirebaseApp.initializeApp(
+                        context,
+                        FirebaseApp.getInstance().options,
+                        SECONDARY_FIREBASE_APP_NAME
+                    )
+                }
+
+            if (secondaryApp == null) {
+                null
+            } else {
+                FirebaseAuth.getInstance(
+                    secondaryApp
+                )
+            }
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "PlumberViewModel",
+                "Unable to create secondary Firebase Auth",
+                e
+            )
+
+            null
         }
     }
 
@@ -1122,17 +1346,18 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         pendingRequestsListener?.remove()
 
-        if (workshopId.isNotBlank()) {
-
-            pendingRequestsListener =
-                FirestoreSync.listenToPendingJoinRequests(
-                    workshopId
-                ) { list ->
-
-                    _pendingJoinRequests.value =
-                        list
-                }
+        if (workshopId.isBlank()) {
+            return
         }
+
+        pendingRequestsListener =
+            FirestoreSync.listenToPendingJoinRequests(
+                workshopId
+            ) { list ->
+
+                _pendingJoinRequests.value =
+                    list
+            }
     }
 
     fun connectWorkerToWorkshopWithSyncCode(
@@ -1147,7 +1372,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             onResult(
                 false,
-                "يجب تسجيل الدخول أولاً"
+                "يجب تسجيل الدخول أولاً."
             )
 
             return
@@ -1229,20 +1454,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // ============================================================
-    // ADMIN WORKER ACCOUNT MANAGEMENT
-    // ============================================================
-    //
-    // مهم:
-    // createUserWithEmailAndPassword() من نفس FirebaseAuth
-    // سيغيّر المستخدم الحالي إلى العامل الجديد.
-    //
-    // لذلك لا نستخدمه هنا.
-    //
-    // إنشاء حساب Firebase من لوحة المدير يحتاج:
-    // Firebase Cloud Function + Admin SDK
-    // أو FirebaseAuth instance ثانوي.
-    //
-    // إلى حين تنفيذ ذلك، تبقى هذه الدالة محلية/Firestore.
+    // ADMIN CREATE WORKER ACCOUNT
     // ============================================================
 
     fun createWorkerAccount(
@@ -1264,10 +1476,23 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        val cleanName =
+            name.trim()
+
+        val cleanPhone =
+            phone.trim()
+                .replace(" ", "")
+
+        val cleanEmailInput =
+            email.trim()
+
+        val cleanPassword =
+            pass.trim()
+
         if (
-            name.isBlank() ||
-            phone.isBlank() ||
-            pass.isBlank()
+            cleanName.isBlank() ||
+            cleanPhone.isBlank() ||
+            cleanPassword.isBlank()
         ) {
 
             onResult(
@@ -1278,10 +1503,191 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        onResult(
-            false,
-            "إنشاء حساب Firebase لعامل من حساب المدير يحتاج Firebase Admin SDK/Cloud Function حتى لا يتم تبديل جلسة المدير."
-        )
+        if (cleanPassword.length < 6) {
+
+            onResult(
+                false,
+                "كلمة المرور يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
+            )
+
+            return
+        }
+
+        viewModelScope.launch {
+
+            val existingByPhone =
+                repository.getUserByPhoneOrEmail(
+                    cleanPhone
+                )
+
+            if (existingByPhone != null) {
+
+                onResult(
+                    false,
+                    "رقم الهاتف مستخدم بالفعل."
+                )
+
+                return@launch
+            }
+
+            val firebaseEmail =
+                if (cleanEmailInput.isBlank()) {
+                    "$cleanPhone@plumber.com"
+                } else {
+                    cleanEmailInput
+                }
+
+            if (
+                !android.util.Patterns.EMAIL_ADDRESS
+                    .matcher(firebaseEmail)
+                    .matches()
+            ) {
+
+                onResult(
+                    false,
+                    "البريد الإلكتروني غير صالح."
+                )
+
+                return@launch
+            }
+
+            val secondaryAuth =
+                getSecondaryFirebaseAuth()
+
+            if (secondaryAuth == null) {
+
+                onResult(
+                    false,
+                    "تعذر تهيئة Firebase Authentication الثانوي."
+                )
+
+                return@launch
+            }
+
+            secondaryAuth
+                .createUserWithEmailAndPassword(
+                    firebaseEmail,
+                    cleanPassword
+                )
+                .addOnSuccessListener { result ->
+
+                    viewModelScope.launch {
+
+                        try {
+
+                            val firebaseUser =
+                                result.user
+
+                            if (firebaseUser == null) {
+
+                                secondaryAuth.signOut()
+
+                                onResult(
+                                    false,
+                                    "تعذر الحصول على UID للعامل."
+                                )
+
+                                return@launch
+                            }
+
+                            val workerUid =
+                                firebaseUser.uid
+
+                            val newUser =
+                                TeamUser(
+                                    uid = workerUid,
+                                    name = cleanName,
+                                    phone = cleanPhone,
+                                    email = firebaseEmail,
+                                    password = "",
+                                    role = role.uppercase(),
+                                    active = true,
+                                    workshopId = "",
+                                    createdAt =
+                                        System.currentTimeMillis(),
+                                    lastLoginAt = 0L
+                                )
+
+                            repository
+                                .insertOrUpdateTeamUser(
+                                    newUser
+                                )
+
+                            FirestoreSync
+                                .syncUserToFirestore(
+                                    newUser
+                                )
+
+                            val updatedList =
+                                _workersList.value
+                                    .toMutableList()
+
+                            val entry =
+                                "${newUser.name} (${newUser.phone})"
+
+                            if (
+                                !updatedList.contains(
+                                    entry
+                                )
+                            ) {
+
+                                updatedList.add(
+                                    entry
+                                )
+
+                                updateWorkersList(
+                                    updatedList
+                                )
+                            }
+
+                            secondaryAuth.signOut()
+
+                            logAuditAction(
+                                "إنشاء حساب Firebase للعامل: ${newUser.name}",
+                                0,
+                                ""
+                            )
+
+                            onResult(
+                                true,
+                                "تم إنشاء حساب العامل ${newUser.name} في Firebase Authentication بنجاح! 🟢"
+                            )
+
+                        } catch (e: Exception) {
+
+                            secondaryAuth.signOut()
+
+                            Log.e(
+                                "PlumberViewModel",
+                                "Error saving admin-created worker",
+                                e
+                            )
+
+                            onResult(
+                                false,
+                                "تم إنشاء الحساب في Firebase لكن حدث خطأ في حفظ بيانات العامل: ${
+                                    e.localizedMessage
+                                }"
+                            )
+                        }
+                    }
+                }
+                .addOnFailureListener { e ->
+
+                    secondaryAuth.signOut()
+
+                    Log.e(
+                        "PlumberViewModel",
+                        "Admin worker creation failed",
+                        e
+                    )
+
+                    onResult(
+                        false,
+                        getFirebaseErrorMessage(e)
+                    )
+                }
+        }
     }
 
     // ============================================================
@@ -1332,15 +1738,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     // ============================================================
     // RESET WORKER PASSWORD
     // ============================================================
-    //
-    // كلمة المرور لم تعد تخزن في Room/Firestore.
-    //
-    // هذه الدالة تحتاج Firebase Admin SDK أو
-    // Password Reset Email.
-    //
-    // حالياً نرفض العملية بدلاً من تخزين كلمة المرور
-    // بشكل غير آمن.
-    // ============================================================
 
     fun resetWorkerPassword(
         uid: String,
@@ -1372,14 +1769,14 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             }
 
             /*
-             * لا نحفظ password في Room أو Firestore.
+             * لا نحفظ كلمة المرور.
              *
-             * تغيير كلمة مرور مستخدم آخر من حساب المدير
-             * يحتاج Admin SDK/Cloud Function.
+             * تغيير كلمة مرور مستخدم آخر في Firebase
+             * يحتاج Firebase Admin SDK / Cloud Function.
              */
             Log.w(
                 "PlumberViewModel",
-                "Password reset for another Firebase user requires Admin SDK. UID=$uid"
+                "Password reset requires Firebase Admin SDK. UID=$uid"
             )
 
             onDone(false)
@@ -1471,6 +1868,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     fun addMaterialToLibrary(
         material: MaterialEntity
     ) {
+
         viewModelScope.launch {
             materialRepository.insertMaterial(
                 material
@@ -1481,6 +1879,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     fun updateMaterialInLibrary(
         material: MaterialEntity
     ) {
+
         viewModelScope.launch {
             materialRepository.updateMaterial(
                 material
@@ -1491,6 +1890,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     fun deleteMaterialFromLibrary(
         id: String
     ) {
+
         viewModelScope.launch {
             materialRepository.deleteMaterial(
                 id
@@ -1882,6 +2282,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             repository.deleteWorkAlert(
                 id
             )
@@ -1939,6 +2340,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             repository.deleteAppointment(
                 id
             )
@@ -1997,6 +2399,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     fun selectProject(
         projectId: Long?
     ) {
+
         _selectedProjectId.value =
             projectId
     }
@@ -2479,6 +2882,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             repository.deleteCustomMaterial(
                 id
             )
@@ -2899,4 +3303,3 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 }
-```
