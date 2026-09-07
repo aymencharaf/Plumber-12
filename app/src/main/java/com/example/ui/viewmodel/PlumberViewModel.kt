@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.util.Log
+
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 
@@ -31,14 +32,31 @@ import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class PlumberViewModel(application: Application) : AndroidViewModel(application) {
+class PlumberViewModel(
+    application: Application
+) : AndroidViewModel(application) {
+
+    // ============================================================
+    // REPOSITORIES
+    // ============================================================
 
     private val repository: PlumberRepository
+
     private val materialRepository: MaterialRepository
-    private val teamStorePrefs = TeamStorePreferences(application)
+
+    private val teamStorePrefs =
+        TeamStorePreferences(application)
 
     private val authPrefs =
         application.getSharedPreferences(
@@ -51,43 +69,167 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+
         private const val SECONDARY_FIREBASE_APP_NAME =
             "PlumberAdminSecondaryAuth"
     }
 
+    // ============================================================
+    // MATERIAL LIBRARY
+    // ============================================================
+
     val libraryMaterials: StateFlow<List<MaterialEntity>>
+
+    // ============================================================
+    // CURRENT USER
+    // ============================================================
 
     private val _currentUser =
         MutableStateFlow<TeamUser?>(null)
 
-    val currentUser: StateFlow<TeamUser?> =
+    val currentUser:
+            StateFlow<TeamUser?> =
         _currentUser.asStateFlow()
+
+    // ============================================================
+    // CURRENT ROLE
+    // ============================================================
 
     private val _currentRole =
         MutableStateFlow("WORKER")
 
-    val currentRole: StateFlow<String> =
+    val currentRole:
+            StateFlow<String> =
         _currentRole.asStateFlow()
+
+    // ============================================================
+    // LOGIN STATE
+    // ============================================================
 
     private val _isUserLoggedIn =
         MutableStateFlow(false)
 
-    val isUserLoggedIn: StateFlow<Boolean> =
+    val isUserLoggedIn:
+            StateFlow<Boolean> =
         _isUserLoggedIn.asStateFlow()
 
-    private val _pendingJoinRequests =
-        MutableStateFlow<List<Map<String, Any>>>(emptyList())
+    // ============================================================
+    // JOIN REQUESTS
+    // ============================================================
 
-    val pendingJoinRequests: StateFlow<List<Map<String, Any>>> =
+    private val _pendingJoinRequests =
+        MutableStateFlow<List<Map<String, Any>>>(
+            emptyList()
+        )
+
+    val pendingJoinRequests:
+            StateFlow<List<Map<String, Any>>> =
         _pendingJoinRequests.asStateFlow()
 
     private var pendingRequestsListener:
-            com.google.firebase.firestore.ListenerRegistration? = null
+            com.google.firebase.firestore.ListenerRegistration? =
+        null
 
-    val allTeamUsers: StateFlow<List<TeamUser>>
-    val allWorkers: StateFlow<List<TeamUser>>
-    val allAuditLogs: StateFlow<List<AuditLog>>
-    val calculatedMaterialCaches: StateFlow<List<CalculatedMaterialCache>>
+    // ============================================================
+    // TEAM USERS
+    // ============================================================
+
+    val allTeamUsers:
+            StateFlow<List<TeamUser>>
+
+    val allWorkers:
+            StateFlow<List<TeamUser>>
+
+    val allAuditLogs:
+            StateFlow<List<AuditLog>>
+
+    val calculatedMaterialCaches:
+            StateFlow<List<CalculatedMaterialCache>>
+
+    // ============================================================
+    // STORE SETTINGS
+    // ============================================================
+
+    private val _storeName =
+        MutableStateFlow(
+            teamStorePrefs.storeName
+        )
+
+    val storeName:
+            StateFlow<String> =
+        _storeName.asStateFlow()
+
+    private val _storePhone =
+        MutableStateFlow(
+            teamStorePrefs.storePhone
+        )
+
+    val storePhone:
+            StateFlow<String> =
+        _storePhone.asStateFlow()
+
+    private val _storeWhatsapp =
+        MutableStateFlow(
+            teamStorePrefs.storeWhatsapp
+        )
+
+    val storeWhatsapp:
+            StateFlow<String> =
+        _storeWhatsapp.asStateFlow()
+
+    private val _activeWorker =
+        MutableStateFlow(
+            teamStorePrefs.activeWorker
+        )
+
+    val activeWorker:
+            StateFlow<String> =
+        _activeWorker.asStateFlow()
+
+    private val _managerName =
+        MutableStateFlow(
+            teamStorePrefs.managerName
+        )
+
+    val managerName:
+            StateFlow<String> =
+        _managerName.asStateFlow()
+
+    private val _isManagerLoggedIn =
+        MutableStateFlow(false)
+
+    val isManagerLoggedIn:
+            StateFlow<Boolean> =
+        _isManagerLoggedIn.asStateFlow()
+
+    private val _managerPin =
+        MutableStateFlow(
+            teamStorePrefs.managerPin
+        )
+
+    val managerPin:
+            StateFlow<String> =
+        _managerPin.asStateFlow()
+
+    private val _workersList =
+        MutableStateFlow(
+            teamStorePrefs.getWorkersList()
+        )
+
+    val workersList:
+            StateFlow<List<String>> =
+        _workersList.asStateFlow()
+
+    // ============================================================
+    // PROJECT SELECTION
+    // ============================================================
+
+    private val _selectedProjectId =
+        MutableStateFlow<Long?>(null)
+
+    val selectedProjectId:
+            StateFlow<Long?> =
+        _selectedProjectId.asStateFlow()
 
     // ============================================================
     // INIT
@@ -95,11 +237,23 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
     init {
 
+        // --------------------------------------------------------
+        // Local databases
+        // --------------------------------------------------------
+
         val db =
-            PlumberDatabase.getDatabase(application)
+            PlumberDatabase.getDatabase(
+                application
+            )
 
         val matDb =
-            MaterialDatabase.getDatabase(application)
+            MaterialDatabase.getDatabase(
+                application
+            )
+
+        // --------------------------------------------------------
+        // Repository
+        // --------------------------------------------------------
 
         repository =
             PlumberRepository(
@@ -119,6 +273,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 matDb.materialDao()
             )
 
+        // --------------------------------------------------------
+        // Team users
+        // --------------------------------------------------------
+
         allTeamUsers =
             repository.allTeamUsers.stateIn(
                 viewModelScope,
@@ -133,12 +291,20 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 emptyList()
             )
 
+        // --------------------------------------------------------
+        // Audit logs
+        // --------------------------------------------------------
+
         allAuditLogs =
             repository.allAuditLogs.stateIn(
                 viewModelScope,
                 SharingStarted.WhileSubscribed(5000),
                 emptyList()
             )
+
+        // --------------------------------------------------------
+        // Calculation cache
+        // --------------------------------------------------------
 
         calculatedMaterialCaches =
             repository.calculatedMaterialCaches.stateIn(
@@ -147,23 +313,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 emptyList()
             )
 
-        /*
-         * لا يوجد seedDefaultTeamUsersIfEmpty().
-         *
-         * المستخدمون الحقيقيون يجب أن يكونوا في:
-         *
-         * Firebase Authentication
-         * +
-         * Firestore users/{uid}
-         */
-        viewModelScope.launch {
-
-            materialRepository.initializeLibraryIfEmpty(
-                application
-            )
-
-            restoreLoginSession()
-        }
+        // --------------------------------------------------------
+        // Library materials
+        // --------------------------------------------------------
 
         libraryMaterials =
             materialRepository.allMaterials.stateIn(
@@ -171,6 +323,35 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 SharingStarted.WhileSubscribed(5000),
                 emptyList()
             )
+
+        // --------------------------------------------------------
+        // Initialize local library
+        // --------------------------------------------------------
+
+        viewModelScope.launch {
+
+            try {
+
+                materialRepository
+                    .initializeLibraryIfEmpty(
+                        application
+                    )
+
+            } catch (e: Exception) {
+
+                Log.e(
+                    "PlumberViewModel",
+                    "Failed to initialize material library",
+                    e
+                )
+            }
+        }
+
+        // --------------------------------------------------------
+        // Restore Firebase session
+        // --------------------------------------------------------
+
+        restoreLoginSession()
     }
 
     // ============================================================
@@ -197,11 +378,16 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     calculationType = calculationType,
                     pipeCategory = pipeCategory,
                     size = size,
-                    inputValuesSummary = inputValuesSummary,
-                    estimatedPipesCount = estimatedPipesCount,
-                    estimatedFittingsCount = estimatedFittingsCount,
-                    estimatedGlueOrSolder = estimatedGlueOrSolder,
-                    generatedMaterialsJson = generatedMaterialsJson
+                    inputValuesSummary =
+                        inputValuesSummary,
+                    estimatedPipesCount =
+                        estimatedPipesCount,
+                    estimatedFittingsCount =
+                        estimatedFittingsCount,
+                    estimatedGlueOrSolder =
+                        estimatedGlueOrSolder,
+                    generatedMaterialsJson =
+                        generatedMaterialsJson
                 )
 
             repository.saveCalculatedMaterialCache(
@@ -215,7 +401,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
-            repository.deleteCalculatedMaterialCache(id)
+
+            repository.deleteCalculatedMaterialCache(
+                id
+            )
         }
     }
 
@@ -236,6 +425,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 .matcher(cleanInput)
                 .matches()
         ) {
+
             return cleanInput
         }
 
@@ -251,10 +441,16 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 .matcher(savedEmail)
                 .matches()
         ) {
+
             return savedEmail
         }
 
-        return "${cleanInput.replace(" ", "")}@plumber.com"
+        return "${
+            cleanInput.replace(
+                " ",
+                ""
+            )
+        }@plumber.com"
     }
 
     private fun getFirebaseErrorMessage(
@@ -263,36 +459,53 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         val errorCode =
             (
-                exception as? FirebaseAuthException
-            )
-                ?.errorCode
-                ?.uppercase()
-                ?: ""
+                exception as?
+                    FirebaseAuthException
+                )
+                    ?.errorCode
+                    ?.uppercase()
+                    ?: ""
 
         return when {
 
-            errorCode.contains("USER_NOT_FOUND") ->
+            errorCode.contains(
+                "USER_NOT_FOUND"
+            ) ->
                 "لا يوجد حساب بهذا البريد الإلكتروني أو رقم الهاتف."
 
-            errorCode.contains("WRONG_PASSWORD") ->
+            errorCode.contains(
+                "WRONG_PASSWORD"
+            ) ->
                 "كلمة المرور غير صحيحة."
 
-            errorCode.contains("INVALID_CREDENTIAL") ->
+            errorCode.contains(
+                "INVALID_CREDENTIAL"
+            ) ->
                 "البريد الإلكتروني أو كلمة المرور غير صحيحة."
 
-            errorCode.contains("INVALID_EMAIL") ->
+            errorCode.contains(
+                "INVALID_EMAIL"
+            ) ->
                 "البريد الإلكتروني غير صالح."
 
-            errorCode.contains("EMAIL_ALREADY_IN_USE") ->
+            errorCode.contains(
+                "EMAIL_ALREADY_IN_USE"
+            ) ->
                 "هذا البريد الإلكتروني مستخدم بالفعل."
 
-            errorCode.contains("WEAK_PASSWORD") ->
+            errorCode.contains(
+                "WEAK_PASSWORD"
+            ) ->
                 "كلمة المرور ضعيفة. يجب أن تحتوي على 6 أحرف أو أرقام على الأقل."
 
-            errorCode.contains("NETWORK") ->
+            errorCode.contains(
+                "NETWORK"
+            ) ->
                 "تعذر الاتصال بـ Firebase. تحقق من اتصال الإنترنت."
 
-            errorCode.contains("TOO_MANY_REQUESTS") ->
+            errorCode.contains(
+                "TOO_MANY_REQUESTS"
+            ) ->
                 "تمت محاولات كثيرة. حاول مرة أخرى لاحقاً."
 
             exception is FirebaseAuthInvalidCredentialsException ->
@@ -316,83 +529,38 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
     private fun restoreLoginSession() {
 
-        val firebaseUser =
-            firebaseAuth.currentUser
+        viewModelScope.launch {
 
-        if (firebaseUser == null) {
+            try {
 
-            authPrefs
-                .edit()
-                .remove("logged_uid")
-                .apply()
+                // ------------------------------------------------
+                // Firebase session
+                // ------------------------------------------------
 
-            return
-        }
+                val firebaseUser =
+                    firebaseAuth.currentUser
 
-        val firebaseUid =
-            firebaseUser.uid
+                if (firebaseUser == null) {
 
-        val firebaseEmail =
-            firebaseUser.email.orEmpty()
-
-        if (firebaseEmail.isBlank()) {
-
-            firebaseAuth.signOut()
-
-            authPrefs
-                .edit()
-                .remove("logged_uid")
-                .apply()
-
-            return
-        }
-
-        Log.d(
-            "PlumberViewModel",
-            "Restoring Firebase session UID=$firebaseUid"
-        )
-
-        /*
-         * Firestore هو مصدر الحقيقة للدور والورشة والحالة.
-         *
-         * لا نعتمد على Room لتحديد ADMIN/WORKER.
-         */
-        FirestoreSync.fetchUserFromFirestoreByPhoneOrEmail(
-            firebaseEmail
-        ) { fetchedUser ->
-
-            viewModelScope.launch {
-
-                if (fetchedUser == null) {
-
-                    Log.w(
+                    Log.d(
                         "PlumberViewModel",
-                        "Firebase account exists but Firestore profile is missing."
+                        "No Firebase session found."
                     )
 
-                    firebaseAuth.signOut()
+                    _currentUser.value =
+                        null
 
-                    authPrefs
-                        .edit()
-                        .remove("logged_uid")
-                        .apply()
+                    _currentRole.value =
+                        "WORKER"
 
-                    _currentUser.value = null
-                    _isUserLoggedIn.value = false
-                    _currentRole.value = "WORKER"
-                    _isManagerLoggedIn.value = false
+                    _isUserLoggedIn.value =
+                        false
 
-                    return@launch
-                }
+                    _isManagerLoggedIn.value =
+                        false
 
-                if (fetchedUser.uid != firebaseUid) {
-
-                    Log.e(
-                        "PlumberViewModel",
-                        "UID mismatch while restoring session."
-                    )
-
-                    firebaseAuth.signOut()
+                    FirestoreSync
+                        .stopRealtimeListener()
 
                     authPrefs
                         .edit()
@@ -402,49 +570,259 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     return@launch
                 }
 
-                if (!fetchedUser.active) {
+                val firebaseUid =
+                    firebaseUser.uid
 
-                    Log.w(
-                        "PlumberViewModel",
-                        "Firebase user is disabled in Firestore."
-                    )
-
-                    firebaseAuth.signOut()
-
-                    authPrefs
-                        .edit()
-                        .remove("logged_uid")
-                        .apply()
-
-                    return@launch
-                }
-
-                val correctedUser =
-                    fetchedUser.copy(
-                        uid = firebaseUid,
-                        password = ""
-                    )
-
-                repository.insertOrUpdateTeamUser(
-                    correctedUser
+                Log.d(
+                    "PlumberViewModel",
+                    "Restoring Firebase session UID=$firebaseUid"
                 )
 
-                restoreUserIntoSession(
-                    correctedUser
+                // ------------------------------------------------
+                // IMPORTANT:
+                // اقرأ users/{UID} مباشرة.
+                // لا تستخدم phone/email هنا.
+                // ------------------------------------------------
+
+                FirestoreSync
+                    .fetchUserFromFirestoreByUid(
+                        firebaseUid
+                    ) { fetchedUser ->
+
+                        viewModelScope.launch {
+
+                            // ------------------------------------
+                            // Firestore profile missing
+                            // ------------------------------------
+
+                            if (fetchedUser == null) {
+
+                                Log.w(
+                                    "PlumberViewModel",
+                                    "Firebase account exists but Firestore profile is missing."
+                                )
+
+                                firebaseAuth.signOut()
+
+                                FirestoreSync
+                                    .stopRealtimeListener()
+
+                                _currentUser.value =
+                                    null
+
+                                _currentRole.value =
+                                    "WORKER"
+
+                                _isUserLoggedIn.value =
+                                    false
+
+                                _isManagerLoggedIn.value =
+                                    false
+
+                                authPrefs
+                                    .edit()
+                                    .remove("logged_uid")
+                                    .apply()
+
+                                return@launch
+                            }
+
+                            // ------------------------------------
+                            // UID verification
+                            // ------------------------------------
+
+                            if (
+                                fetchedUser.uid !=
+                                firebaseUid
+                            ) {
+
+                                Log.e(
+                                    "PlumberViewModel",
+                                    "UID mismatch while restoring Firebase session."
+                                )
+
+                                firebaseAuth.signOut()
+
+                                FirestoreSync
+                                    .stopRealtimeListener()
+
+                                _currentUser.value =
+                                    null
+
+                                _currentRole.value =
+                                    "WORKER"
+
+                                _isUserLoggedIn.value =
+                                    false
+
+                                _isManagerLoggedIn.value =
+                                    false
+
+                                authPrefs
+                                    .edit()
+                                    .remove("logged_uid")
+                                    .apply()
+
+                                return@launch
+                            }
+
+                            // ------------------------------------
+                            // Role verification
+                            // ------------------------------------
+
+                            val normalizedRole =
+                                fetchedUser.role
+                                    .trim()
+                                    .uppercase()
+
+                            if (
+                                normalizedRole != "ADMIN" &&
+                                normalizedRole != "MANAGER" &&
+                                normalizedRole != "WORKER"
+                            ) {
+
+                                Log.e(
+                                    "PlumberViewModel",
+                                    "Invalid Firestore role: ${fetchedUser.role}"
+                                )
+
+                                firebaseAuth.signOut()
+
+                                FirestoreSync
+                                    .stopRealtimeListener()
+
+                                _currentUser.value =
+                                    null
+
+                                _currentRole.value =
+                                    "WORKER"
+
+                                _isUserLoggedIn.value =
+                                    false
+
+                                _isManagerLoggedIn.value =
+                                    false
+
+                                return@launch
+                            }
+
+                            // ------------------------------------
+                            // Active verification
+                            // ------------------------------------
+
+                            if (!fetchedUser.active) {
+
+                                Log.w(
+                                    "PlumberViewModel",
+                                    "Firebase user is inactive."
+                                )
+
+                                firebaseAuth.signOut()
+
+                                FirestoreSync
+                                    .stopRealtimeListener()
+
+                                _currentUser.value =
+                                    null
+
+                                _currentRole.value =
+                                    "WORKER"
+
+                                _isUserLoggedIn.value =
+                                    false
+
+                                _isManagerLoggedIn.value =
+                                    false
+
+                                authPrefs
+                                    .edit()
+                                    .remove("logged_uid")
+                                    .apply()
+
+                                return@launch
+                            }
+
+                            // ------------------------------------
+                            // Correct user
+                            // ------------------------------------
+
+                            val correctedUser =
+                                fetchedUser.copy(
+                                    uid = firebaseUid,
+                                    role = normalizedRole,
+                                    password = ""
+                                )
+
+                            repository
+                                .insertOrUpdateTeamUser(
+                                    correctedUser
+                                )
+
+                            // ------------------------------------
+                            // Restore session
+                            // ------------------------------------
+
+                            restoreUserIntoSession(
+                                correctedUser
+                            )
+                        }
+                    }
+
+            } catch (e: Exception) {
+
+                Log.e(
+                    "PlumberViewModel",
+                    "Failed to restore Firebase session.",
+                    e
                 )
+
+                firebaseAuth.signOut()
+
+                FirestoreSync
+                    .stopRealtimeListener()
+
+                _currentUser.value =
+                    null
+
+                _currentRole.value =
+                    "WORKER"
+
+                _isUserLoggedIn.value =
+                    false
+
+                _isManagerLoggedIn.value =
+                    false
+
+                authPrefs
+                    .edit()
+                    .remove("logged_uid")
+                    .apply()
             }
         }
     }
+
+    // ============================================================
+    // RESTORE USER INTO SESSION
+    // ============================================================
 
     private fun restoreUserIntoSession(
         user: TeamUser
     ) {
 
         val normalizedRole =
-            user.role.trim().uppercase()
+            user.role
+                .trim()
+                .uppercase()
+
+        val correctedUser =
+            user.copy(
+                uid = user.uid,
+                role = normalizedRole,
+                password = ""
+            )
 
         _currentUser.value =
-            user.copy(password = "")
+            correctedUser
 
         _currentRole.value =
             normalizedRole
@@ -459,17 +837,40 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             .edit()
             .putString(
                 "logged_uid",
-                user.uid
+                correctedUser.uid
             )
             .apply()
 
-        if (user.workshopId.isNotBlank()) {
+        // --------------------------------------------------------
+        // Start realtime sync only when workshop exists
+        // --------------------------------------------------------
+
+        val workshopId =
+            correctedUser.workshopId
+                .trim()
+
+        if (workshopId.isNotBlank()) {
 
             FirestoreSync.startRealtimeListener(
-                getApplication(),
-                normalizedRole,
-                user.uid,
-                user.workshopId
+                context = getApplication(),
+                userRole = normalizedRole,
+                workerUid = correctedUser.uid,
+                workshopId = workshopId
+            )
+
+            Log.d(
+                "PlumberViewModel",
+                "Realtime sync started. workshopId=$workshopId"
+            )
+
+        } else {
+
+            FirestoreSync
+                .stopRealtimeListener()
+
+            Log.w(
+                "PlumberViewModel",
+                "User restored without workshopId."
             )
         }
     }
@@ -535,104 +936,121 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     )
                     .addOnSuccessListener { authResult ->
 
-                        viewModelScope.launch {
+                        val firebaseUser =
+                            authResult.user
 
-                            val firebaseUser =
-                                authResult.user
+                        if (firebaseUser == null) {
 
-                            if (firebaseUser == null) {
+                            onResult(
+                                false,
+                                "تعذر الحصول على بيانات حساب Firebase."
+                            )
 
-                                onResult(
-                                    false,
-                                    "تعذر الحصول على بيانات حساب Firebase."
-                                )
-
-                                return@launch
-                            }
-
-                            val firebaseUid =
-                                firebaseUser.uid
-
-                            /*
-                             * لا نستخدم Room كمصدر للصلاحيات.
-                             *
-                             * نبحث عن الملف الحقيقي في Firestore.
-                             */
-                            FirestoreSync
-                                .fetchUserFromFirestoreByPhoneOrEmail(
-                                    firebaseEmail
-                                ) { fetchedUser ->
-
-                                    viewModelScope.launch {
-
-                                        if (fetchedUser == null) {
-
-                                            firebaseAuth.signOut()
-
-                                            onResult(
-                                                false,
-                                                "حساب Firebase موجود، لكن بيانات المستخدم غير موجودة في نظام الورشة. يرجى إنشاء بيانات الحساب وربطه بالورشة أولاً."
-                                            )
-
-                                            return@launch
-                                        }
-
-                                        if (
-                                            fetchedUser.uid !=
-                                            firebaseUid
-                                        ) {
-
-                                            firebaseAuth.signOut()
-
-                                            onResult(
-                                                false,
-                                                "خطأ أمني: UID في Firestore لا يطابق UID في Firebase Authentication."
-                                            )
-
-                                            return@launch
-                                        }
-
-                                        if (
-                                            !fetchedUser.active
-                                        ) {
-
-                                            firebaseAuth.signOut()
-
-                                            onResult(
-                                                false,
-                                                "هذا الحساب معطل حالياً من قبل الإدارة."
-                                            )
-
-                                            return@launch
-                                        }
-
-                                        val correctedUser =
-                                            fetchedUser.copy(
-                                                uid = firebaseUid,
-                                                password = "",
-                                                lastLoginAt =
-                                                    System.currentTimeMillis()
-                                            )
-
-                                        repository
-                                            .insertOrUpdateTeamUser(
-                                                correctedUser
-                                            )
-
-                                        /*
-                                         * لا نرسل role/workshopId
-                                         * إلى Firestore عند تسجيل الدخول.
-                                         *
-                                         * هذا يمنع Room أو بيانات محلية قديمة
-                                         * من تغيير صلاحيات المستخدم.
-                                         */
-                                        processFirebaseUserLogin(
-                                            correctedUser,
-                                            onResult
-                                        )
-                                    }
-                                }
+                            return@addOnSuccessListener
                         }
+
+                        val firebaseUid =
+                            firebaseUser.uid
+
+                        // ------------------------------------------------
+                        // IMPORTANT:
+                        // Firebase UID is the security identity.
+                        // ------------------------------------------------
+
+                        FirestoreSync
+                            .fetchUserFromFirestoreByUid(
+                                firebaseUid
+                            ) { fetchedUser ->
+
+                                viewModelScope.launch {
+
+                                    if (fetchedUser == null) {
+
+                                        firebaseAuth.signOut()
+
+                                        onResult(
+                                            false,
+                                            "حساب Firebase موجود، لكن بيانات المستخدم غير موجودة في Firestore."
+                                        )
+
+                                        return@launch
+                                    }
+
+                                    if (
+                                        fetchedUser.uid !=
+                                        firebaseUid
+                                    ) {
+
+                                        firebaseAuth.signOut()
+
+                                        onResult(
+                                            false,
+                                            "خطأ أمني: UID في Firestore لا يطابق UID في Firebase Authentication."
+                                        )
+
+                                        return@launch
+                                    }
+
+                                    if (
+                                        !fetchedUser.active
+                                    ) {
+
+                                        firebaseAuth.signOut()
+
+                                        onResult(
+                                            false,
+                                            "هذا الحساب معطل حالياً من قبل الإدارة."
+                                        )
+
+                                        return@launch
+                                    }
+
+                                    val normalizedRole =
+                                        fetchedUser.role
+                                            .trim()
+                                            .uppercase()
+
+                                    if (
+                                        normalizedRole !=
+                                        "ADMIN" &&
+                                        normalizedRole !=
+                                        "MANAGER" &&
+                                        normalizedRole !=
+                                        "WORKER"
+                                    ) {
+
+                                        firebaseAuth.signOut()
+
+                                        onResult(
+                                            false,
+                                            "دور المستخدم في Firestore غير صالح."
+                                        )
+
+                                        return@launch
+                                    }
+
+                                    val correctedUser =
+                                        fetchedUser.copy(
+                                            uid =
+                                                firebaseUid,
+                                            role =
+                                                normalizedRole,
+                                            password = "",
+                                            lastLoginAt =
+                                                System.currentTimeMillis()
+                                        )
+
+                                    repository
+                                        .insertOrUpdateTeamUser(
+                                            correctedUser
+                                        )
+
+                                    processFirebaseUserLogin(
+                                        correctedUser,
+                                        onResult
+                                    )
+                                }
+                            }
                     }
                     .addOnFailureListener { e ->
 
@@ -723,9 +1141,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     System.currentTimeMillis()
             )
 
-        repository.insertOrUpdateTeamUser(
-            updatedUser
-        )
+        repository
+            .insertOrUpdateTeamUser(
+                updatedUser
+            )
 
         _currentUser.value =
             updatedUser
@@ -737,7 +1156,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             true
 
         _isManagerLoggedIn.value =
-            updatedUser.role.uppercase() == "ADMIN"
+            updatedUser.role.uppercase() ==
+                    "ADMIN"
 
         authPrefs
             .edit()
@@ -747,15 +1167,17 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             )
             .apply()
 
-        if (
-            updatedUser.workshopId.isNotBlank()
-        ) {
+        val workshopId =
+            updatedUser.workshopId
+                .trim()
+
+        if (workshopId.isNotBlank()) {
 
             FirestoreSync.startRealtimeListener(
-                getApplication(),
-                updatedUser.role,
-                updatedUser.uid,
-                updatedUser.workshopId
+                context = getApplication(),
+                userRole = updatedUser.role,
+                workerUid = updatedUser.uid,
+                workshopId = workshopId
             )
         }
 
@@ -799,9 +1221,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         val cleanPassword =
             pass.trim()
 
-        /*
-         * التسجيل الذاتي لا يسمح بإنشاء ADMIN.
-         */
+        // Self registration = WORKER only
         val cleanRole =
             "WORKER"
 
@@ -943,10 +1363,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                         newUser
                                     )
 
-                                /*
-                                 * المستخدم الحالي هو نفس المستخدم
-                                 * الذي تم إنشاؤه في Firebase.
-                                 */
                                 FirestoreSync
                                     .syncUserToFirestore(
                                         newUser
@@ -954,12 +1370,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                                 if (!autoLogin) {
 
-                                    /*
-                                     * createUserWithEmailAndPassword
-                                     * يسجل المستخدم دخولاً تلقائياً.
-                                     *
-                                     * إذا autoLogin=false يجب إلغاء الجلسة.
-                                     */
                                     firebaseAuth.signOut()
 
                                 } else {
@@ -1047,7 +1457,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     // SECONDARY FIREBASE AUTH
     // ============================================================
 
-    private fun getSecondaryFirebaseAuth(): FirebaseAuth? {
+    private fun getSecondaryFirebaseAuth():
+            FirebaseAuth? {
 
         return try {
 
@@ -1116,6 +1527,19 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
+        val currentAdmin =
+            _currentUser.value
+
+        if (currentAdmin == null) {
+
+            onResult(
+                false,
+                "بيانات حساب المدير غير متوفرة."
+            )
+
+            return
+        }
+
         val cleanName =
             name.trim()
 
@@ -1130,10 +1554,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         val cleanPassword =
             pass.trim()
 
-        /*
-         * هذه الدالة مخصصة للعامل.
-         * لا نسمح بإنشاء ADMIN من شاشة إضافة عامل.
-         */
         val normalizedRole =
             "WORKER"
 
@@ -1241,18 +1661,54 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                             val workerUid =
                                 firebaseUser.uid
 
+                            /*
+                             * مهم:
+                             * العامل الذي ينشئه المدير يرتبط مباشرة
+                             * بورشة المدير الحالية.
+                             */
+                            val workshopId =
+                                currentAdmin.workshopId
+                                    .trim()
+
+                            if (workshopId.isBlank()) {
+
+                                secondaryAuth.signOut()
+
+                                onResult(
+                                    false,
+                                    "لا يمكن إنشاء العامل لأن حساب المدير غير مرتبط بورشة."
+                                )
+
+                                return@launch
+                            }
+
                             val newUser =
                                 TeamUser(
-                                    uid = workerUid,
-                                    name = cleanName,
-                                    phone = cleanPhone,
-                                    email = firebaseEmail,
+                                    uid =
+                                        workerUid,
+
+                                    name =
+                                        cleanName,
+
+                                    phone =
+                                        cleanPhone,
+
+                                    email =
+                                        firebaseEmail,
+
                                     password = "",
-                                    role = normalizedRole,
+
+                                    role =
+                                        normalizedRole,
+
                                     active = true,
-                                    workshopId = "",
+
+                                    workshopId =
+                                        workshopId,
+
                                     createdAt =
                                         System.currentTimeMillis(),
+
                                     lastLoginAt = 0L
                                 )
 
@@ -1261,15 +1717,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                                     newUser
                                 )
 
-                            /*
-                             * مهم جداً:
-                             *
-                             * لا نستعمل syncUserToFirestore()
-                             * هنا لأن UID المدير مختلف عن UID العامل.
-                             *
-                             * هذه الدالة مخصصة للمدير لإنشاء
-                             * users/{workerUid}.
-                             */
                             FirestoreSync
                                 .createUserProfileByAdmin(
                                     newUser
@@ -1325,7 +1772,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                                     onResult(
                                         true,
-                                        "تم إنشاء حساب العامل ${newUser.name} في Firebase Authentication وFirestore بنجاح! 🟢"
+                                        "تم إنشاء حساب العامل ${newUser.name} وربطه بالورشة بنجاح! 🟢"
                                     )
                                 }
 
@@ -1378,7 +1825,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             )
         }
 
-        FirestoreSync.stopRealtimeListener()
+        FirestoreSync
+            .stopRealtimeListener()
 
         pendingRequestsListener
             ?.remove()
@@ -1400,6 +1848,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         _isManagerLoggedIn.value =
             false
 
+        _pendingJoinRequests.value =
+            emptyList()
+
         authPrefs
             .edit()
             .remove("logged_uid")
@@ -1416,6 +1867,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         pendingRequestsListener
             ?.remove()
+
+        pendingRequestsListener =
+            null
 
         if (workshopId.isBlank()) {
             return
@@ -1508,7 +1962,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                         _pendingJoinRequests.value
                             .filterNot {
                                 it["requestId"] ==
-                                        requestId
+                                    requestId
                             }
                 }
 
@@ -1529,7 +1983,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             onResult(
                 false,
-                "الإدارة فقط تستطيع رفض طلبات الانضمام."
+                "الإدارة فقط تستطيع رفض الطلبات."
             )
 
             return
@@ -1547,7 +2001,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                         _pendingJoinRequests.value
                             .filterNot {
                                 it["requestId"] ==
-                                        requestId
+                                    requestId
                             }
                 }
 
@@ -1592,22 +2046,19 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     password = ""
                 )
 
-            /*
-             * المدير يستطيع تعديل المستخدم الآخر
-             * عبر الدالة المخصصة للمدير.
-             */
-            FirestoreSync.updateUserProfileByAdmin(
-                updated
-            ) { success, message ->
+            FirestoreSync
+                .updateUserProfileByAdmin(
+                    updated
+                ) { success, message ->
 
-                if (!success) {
+                    if (!success) {
 
-                    Log.e(
-                        "PlumberViewModel",
-                        "Failed to update worker active state: $message"
-                    )
+                        Log.e(
+                            "PlumberViewModel",
+                            "Failed to update worker active state: $message"
+                        )
+                    }
                 }
-            }
 
             logAuditAction(
                 "تغيير حالة حساب العامل ${user.name} إلى: ${
@@ -1618,13 +2069,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 ""
             )
 
-            /*
-             * إذا كان المستخدم الذي تم تعطيله
-             * هو المستخدم الحالي، ننهي جلسته.
-             */
             if (
                 !active &&
-                firebaseAuth.currentUser?.uid == uid
+                firebaseAuth.currentUser?.uid ==
+                uid
             ) {
 
                 logoutTeamUser()
@@ -1656,10 +2104,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        /*
-         * تغيير كلمة مرور مستخدم آخر يحتاج Firebase Admin SDK
-         * أو Cloud Function موثوقة.
-         */
         Log.w(
             "PlumberViewModel",
             "Password reset requires Firebase Admin SDK. UID=$uid"
@@ -1742,10 +2186,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 log
             )
 
-            /*
-             * تمرير workshopId حتى تكون سجلات العمليات
-             * مرتبطة بالورشة في Firestore.
-             */
             FirestoreSync.syncAuditLogToFirestore(
                 log,
                 worker?.workshopId ?: ""
@@ -1762,6 +2202,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             materialRepository.insertMaterial(
                 material
             )
@@ -1773,6 +2214,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             materialRepository.updateMaterial(
                 material
             )
@@ -1784,6 +2226,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
+
             materialRepository.deleteMaterial(
                 id
             )
@@ -1806,26 +2249,54 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val item =
                 ProjectItem(
-                    projectId = projId,
-                    materialKey = material.id,
-                    materialNameAr = material.nameAr,
-                    materialNameFr = material.nameFr,
-                    category = material.category,
-                    size = size,
-                    quantity = quantity,
-                    unit = unit,
-                    unitPrice = material.price,
-                    notes = notes,
-                    iconType = material.iconType,
+                    projectId =
+                        projId,
+
+                    materialKey =
+                        material.id,
+
+                    materialNameAr =
+                        material.nameAr,
+
+                    materialNameFr =
+                        material.nameFr,
+
+                    category =
+                        material.category,
+
+                    size =
+                        size,
+
+                    quantity =
+                        quantity,
+
+                    unit =
+                        unit,
+
+                    unitPrice =
+                        material.price,
+
+                    notes =
+                        notes,
+
+                    iconType =
+                        material.iconType,
+
                     imageUri =
                         material.image.ifBlank {
                             null
-                        }
+                        },
+
+                    workshopId =
+                        _currentUser.value
+                            ?.workshopId
+                            ?: ""
                 )
 
-            repository.addOrUpdateProjectItem(
-                item
-            )
+            repository
+                .addOrUpdateProjectItem(
+                    item
+                )
 
             syncProjectItem(
                 item
@@ -1835,80 +2306,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
     // ============================================================
     // STORE SETTINGS
-    // ============================================================
-
-    private val _storeName =
-        MutableStateFlow(
-            teamStorePrefs.storeName
-        )
-
-    val storeName:
-            StateFlow<String> =
-        _storeName.asStateFlow()
-
-    private val _storePhone =
-        MutableStateFlow(
-            teamStorePrefs.storePhone
-        )
-
-    val storePhone:
-            StateFlow<String> =
-        _storePhone.asStateFlow()
-
-    private val _storeWhatsapp =
-        MutableStateFlow(
-            teamStorePrefs.storeWhatsapp
-        )
-
-    val storeWhatsapp:
-            StateFlow<String> =
-        _storeWhatsapp.asStateFlow()
-
-    private val _activeWorker =
-        MutableStateFlow(
-            teamStorePrefs.activeWorker
-        )
-
-    val activeWorker:
-            StateFlow<String> =
-        _activeWorker.asStateFlow()
-
-    private val _managerName =
-        MutableStateFlow(
-            teamStorePrefs.managerName
-        )
-
-    val managerName:
-            StateFlow<String> =
-        _managerName.asStateFlow()
-
-    private val _isManagerLoggedIn =
-        MutableStateFlow(false)
-
-    val isManagerLoggedIn:
-            StateFlow<Boolean> =
-        _isManagerLoggedIn.asStateFlow()
-
-    private val _managerPin =
-        MutableStateFlow(
-            teamStorePrefs.managerPin
-        )
-
-    val managerPin:
-            StateFlow<String> =
-        _managerPin.asStateFlow()
-
-    private val _workersList =
-        MutableStateFlow(
-            teamStorePrefs.getWorkersList()
-        )
-
-    val workersList:
-            StateFlow<List<String>> =
-        _workersList.asStateFlow()
-
-    // ============================================================
-    // MANAGER PIN
     // ============================================================
 
     fun setManagerLoggedIn(
@@ -1923,10 +2320,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        /*
-         * PIN/UI manager state لا يستطيع إنشاء
-         * جلسة ADMIN من لا شيء.
-         */
         if (
             firebaseAuth.currentUser != null &&
             _currentRole.value == "ADMIN"
@@ -1945,6 +2338,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             firebaseAuth.currentUser == null ||
             _currentRole.value != "ADMIN"
         ) {
+
             return false
         }
 
@@ -1977,6 +2371,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             firebaseAuth.currentUser == null ||
             _currentRole.value != "ADMIN"
         ) {
+
             return false
         }
 
@@ -1997,10 +2392,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         return false
     }
-
-    // ============================================================
-    // STORE SETTINGS
-    // ============================================================
 
     fun updateTeamStoreSettings(
         storeNameVal: String,
@@ -2048,11 +2439,20 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 ?: ""
 
         FirestoreSync.syncStoreSettingsToFirestore(
-            storeName = storeNameVal,
-            storePhone = storePhoneVal,
-            storeWhatsapp = storeWhatsappVal,
-            managerName = managerNameVal,
-            workshopId = workshopId
+            storeName =
+                storeNameVal,
+
+            storePhone =
+                storePhoneVal,
+
+            storeWhatsapp =
+                storeWhatsappVal,
+
+            managerName =
+                managerNameVal,
+
+            workshopId =
+                workshopId
         )
     }
 
@@ -2072,39 +2472,6 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     // PROJECTS
     // ============================================================
 
-    fun updateProjectOrderStatus(
-        projectId: Long,
-        newStatus: String
-    ) {
-
-        viewModelScope.launch {
-
-            val proj =
-                repository
-                    .getProject(projectId)
-                    .firstOrNull()
-
-            if (proj != null) {
-
-                val updated =
-                    proj.copy(
-                        orderStatus =
-                            newStatus,
-                        updatedAt =
-                            System.currentTimeMillis()
-                    )
-
-                repository.updateProject(
-                    updated
-                )
-
-                syncProject(
-                    updated
-                )
-            }
-        }
-    }
-
     val allProjects:
             StateFlow<List<Project>> =
         repository.allProjects.stateIn(
@@ -2112,6 +2479,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             SharingStarted.WhileSubscribed(5000),
             emptyList()
         )
+
+    // ============================================================
+    // VISIBLE PROJECTS
+    // ============================================================
 
     val visibleProjects:
             StateFlow<List<Project>> =
@@ -2121,37 +2492,78 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             currentRole
         ) { projects, user, role ->
 
-            if (
-                role == "ADMIN" ||
-                user == null
-            ) {
+            if (user == null) {
 
-                projects
+                emptyList()
 
             } else {
 
-                val userUid =
-                    user.uid
+                val normalizedRole =
+                    role.trim().uppercase()
 
-                val userPhone =
-                    user.phone
+                val workshopId =
+                    user.workshopId.trim()
 
-                val userName =
-                    user.name
+                if (
+                    normalizedRole == "ADMIN" ||
+                    normalizedRole == "MANAGER"
+                ) {
 
-                projects.filter { proj ->
+                    /*
+                     * الإدارة ترى مشاريع ورشتها فقط.
+                     *
+                     * المشروع القديم الذي لا يحتوي workshopId
+                     * يسمح له بالظهور حتى تتم عملية ترحيله.
+                     */
+                    projects.filter { project ->
 
-                    proj.isAssignedToWorker(
-                        userUid
-                    ) ||
-                            proj.isAssignedToWorker(
-                                userPhone
-                            ) ||
-                            proj.isAssignedToWorker(
-                                userName
-                            ) ||
-                            proj.workerName.isBlank()
+                        project.workshopId.isBlank() ||
+                                project.workshopId ==
+                                workshopId
+                    }
+
+                } else {
+
+                    /*
+                     * العامل يرى:
+                     *
+                     * 1. مشاريع ورشته.
+                     * 2. المشاريع المسندة إلى UID الخاص به.
+                     * 3. المشاريع التي أنشأها بنفسه.
+                     *
+                     * لا نعتمد على phone/name.
+                     */
+
+                    projects.filter { project ->
+
+                        if (
+                            project.workshopId !=
+                            workshopId
+                        ) {
+
+                            false
+
+                        } else {
+
+                            val assigned =
+                                project.assignedWorkers
+                                    .split(",")
+                                    .map {
+                                        it.trim()
+                                    }
+                                    .filter {
+                                        it.isNotBlank()
+                                    }
+
+                            project.createdBy ==
+                                    user.uid ||
+                                    assigned.contains(
+                                        user.uid
+                                    )
+                        }
+                    }
                 }
+
             }
 
         }.stateIn(
@@ -2205,12 +2617,23 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val alert =
                 WorkAlert(
-                    alertType = alertType,
-                    senderName = senderName,
-                    recipientRole = recipientRole,
-                    title = title,
-                    details = details,
-                    projectName = projectName
+                    alertType =
+                        alertType,
+
+                    senderName =
+                        senderName,
+
+                    recipientRole =
+                        recipientRole,
+
+                    title =
+                        title,
+
+                    details =
+                        details,
+
+                    projectName =
+                        projectName
                 )
 
             repository.insertWorkAlert(
@@ -2228,7 +2651,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             repository.updateWorkAlert(
                 alert.copy(
-                    status = newStatus
+                    status =
+                        newStatus
                 )
             )
         }
@@ -2239,7 +2663,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
-            repository.deleteWorkAlert(id)
+
+            repository.deleteWorkAlert(
+                id
+            )
         }
     }
 
@@ -2260,12 +2687,23 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val appt =
                 Appointment(
-                    serviceType = serviceType,
-                    customerName = customerName,
-                    phoneNumber = phoneNumber,
-                    address = address,
-                    scheduledTime = scheduledTime,
-                    notes = notes
+                    serviceType =
+                        serviceType,
+
+                    customerName =
+                        customerName,
+
+                    phoneNumber =
+                        phoneNumber,
+
+                    address =
+                        address,
+
+                    scheduledTime =
+                        scheduledTime,
+
+                    notes =
+                        notes
                 )
 
             repository.insertAppointment(
@@ -2283,7 +2721,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             repository.updateAppointment(
                 appointment.copy(
-                    status = newStatus
+                    status =
+                        newStatus
                 )
             )
         }
@@ -2294,20 +2733,16 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
     ) {
 
         viewModelScope.launch {
-            repository.deleteAppointment(id)
+
+            repository.deleteAppointment(
+                id
+            )
         }
     }
 
     // ============================================================
-    // PROJECT SELECTION
+    // CURRENT PROJECT
     // ============================================================
-
-    private val _selectedProjectId =
-        MutableStateFlow<Long?>(null)
-
-    val selectedProjectId:
-            StateFlow<Long?> =
-        _selectedProjectId.asStateFlow()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val currentProject:
@@ -2317,7 +2752,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                 if (id != null) {
 
-                    repository.getProject(id)
+                    repository.getProject(
+                        id
+                    )
 
                 } else {
 
@@ -2331,6 +2768,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 null
             )
 
+    // ============================================================
+    // CURRENT PROJECT ITEMS
+    // ============================================================
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val currentProjectItems:
             StateFlow<List<ProjectItem>> =
@@ -2339,7 +2780,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                 if (id != null) {
 
-                    repository.getProjectItems(id)
+                    repository.getProjectItems(
+                        id
+                    )
 
                 } else {
 
@@ -2383,47 +2826,72 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val currentUser =
                 _currentUser.value
-
-            if (currentUser == null) {
-
-                return@launch
-            }
+                    ?: return@launch
 
             val isAdmin =
-                _currentRole.value == "ADMIN"
+                _currentRole.value
+                    .trim()
+                    .uppercase() == "ADMIN"
 
             val workTypeObj =
-                PlumbingLibraryData.WORK_TYPES.find {
-                    it.key == workTypeKey
-                }
+                PlumbingLibraryData.WORK_TYPES
+                    .find {
+                        it.key == workTypeKey
+                    }
 
             val workTypeName =
                 workTypeObj
                     ?.titleAr
                     ?: "عمل مخصص"
 
-            /*
-             * assignedWorkers يجب أن تحتوي UID.
-             */
+            // ----------------------------------------------------
+            // Resolve worker UID
+            // ----------------------------------------------------
+
             val assignedWorkerUid =
                 if (isAdmin) {
 
-                    /*
-                     * إذا كان المدير ينشئ المشروع،
-                     * لا نخمن UID من اسم العامل.
-                     *
-                     * في حالة عدم وجود UID،
-                     * يبقى المشروع بدون عامل معين.
-                     */
-                    ""
+                    if (
+                        workerName.isBlank()
+                    ) {
+
+                        ""
+
+                    } else {
+
+                        val currentWorkshop =
+                            currentUser.workshopId
+
+                        allWorkers.value
+                            .firstOrNull { worker ->
+
+                                worker.workshopId ==
+                                        currentWorkshop &&
+                                        (
+                                            worker.name ==
+                                                    workerName ||
+                                                    worker.phone ==
+                                                    workerName ||
+                                                    "${worker.name} (${worker.phone})" ==
+                                                    workerName
+                                            )
+                            }
+                            ?.uid
+                            .orEmpty()
+                    }
 
                 } else {
 
                     currentUser.uid
                 }
 
+            // ----------------------------------------------------
+            // Create project
+            // ----------------------------------------------------
+
             val newProj =
                 Project(
+
                     title =
                         title.ifBlank {
                             "مشروع جديد"
@@ -2459,21 +2927,12 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                             _storePhone.value
                         },
 
-                    /*
-                     * هنا UID وليس الاسم.
-                     */
                     assignedWorkers =
                         assignedWorkerUid,
 
                     createdBy =
                         currentUser.uid,
 
-                    /*
-                     * العامل لا يستطيع إنشاء
-                     * قيمة مالية حقيقية.
-                     *
-                     * Firestore Rules أيضاً تحمي هذه الحقول.
-                     */
                     laborCost =
                         if (isAdmin) {
                             laborCost
@@ -2499,7 +2958,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val createdObj =
                 newProj.copy(
-                    id = newId,
+                    id =
+                        newId,
+
                     updatedAt =
                         System.currentTimeMillis()
                 )
@@ -2523,38 +2984,153 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    // ============================================================
+    // SYNC PROJECT
+    // ============================================================
+
     private fun syncProject(
         project: Project
     ) {
 
         FirestoreSync.syncProjectToFirestore(
-            project,
-            project.workshopId
+            project = project,
+            workshopId = project.workshopId
         )
     }
+
+    // ============================================================
+    // ITEM OWNER
+    // ============================================================
+
+    private fun itemWorkerId(
+        item: ProjectItem
+    ): String {
+
+        val currentUser =
+            _currentUser.value
+                ?: return ""
+
+        // العامل = نفسه
+        if (
+            _currentRole.value
+                .trim()
+                .uppercase() != "ADMIN"
+        ) {
+
+            return currentUser.uid
+        }
+
+        /*
+         * المدير لا يصبح مالك المادة.
+         *
+         * نبحث عن العامل المسند إلى المشروع.
+         */
+        val project =
+            currentProject.value
+                ?.takeIf {
+                    it.id == item.projectId
+                }
+
+        val assignedWorkerUid =
+            project
+                ?.assignedWorkers
+                ?.split(",")
+                ?.map {
+                    it.trim()
+                }
+                ?.firstOrNull {
+                    it.isNotBlank()
+                }
+                .orEmpty()
+
+        return assignedWorkerUid.ifBlank {
+            currentUser.uid
+        }
+    }
+
+    // ============================================================
+    // SYNC PROJECT ITEM
+    // ============================================================
 
     private fun syncProjectItem(
         item: ProjectItem,
         workerId: String = ""
     ) {
 
-        val user =
+        val currentUser =
             _currentUser.value
 
         val resolvedWorkerId =
-            workerId
+            workerId.ifBlank {
+
+                if (
+                    _currentRole.value
+                        .trim()
+                        .uppercase() == "ADMIN"
+                ) {
+
+                    itemWorkerId(
+                        item
+                    )
+
+                } else {
+
+                    currentUser
+                        ?.uid
+                        .orEmpty()
+                }
+            }
+
+        val resolvedWorkerName =
+            if (
+                resolvedWorkerId.isNotBlank()
+            ) {
+
+                allWorkers.value
+                    .firstOrNull {
+                        it.uid ==
+                                resolvedWorkerId
+                    }
+                    ?.name
+                    ?: if (
+                        resolvedWorkerId ==
+                        currentUser?.uid
+                    ) {
+                        currentUser.name
+                    } else {
+                        ""
+                    }
+
+            } else {
+
+                currentUser
+                    ?.name
+                    .orEmpty()
+            }
+
+        val workshopId =
+            item.workshopId
                 .ifBlank {
-                    user?.uid ?: ""
+                    currentUser
+                        ?.workshopId
+                        .orEmpty()
                 }
 
-        FirestoreSync.syncProjectItemToFirestore(
-            item = item,
-            workerId = resolvedWorkerId,
-            workerName =
-                user?.name ?: "",
-            workshopId =
-                user?.workshopId ?: ""
-        )
+        FirestoreSync
+            .syncProjectItemToFirestore(
+
+                item =
+                    item,
+
+                workerId =
+                    resolvedWorkerId,
+
+                workerName =
+                    resolvedWorkerName,
+
+                workshopId =
+                    workshopId
+            )
     }
 
     // ============================================================
@@ -2615,7 +3191,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         workerName: String,
         managerName: String,
         laborCost: Double,
-        paidAmount: Double
+        paidAmount: Double,
+        workerUid: String = ""
     ) {
 
         if (_currentRole.value != "ADMIN") {
@@ -2628,35 +3205,98 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 repository
                     .getProject(projectId)
                     .firstOrNull()
+                    ?: return@launch
 
-            if (proj != null) {
+            val currentUser =
+                _currentUser.value
+                    ?: return@launch
 
-                val updated =
-                    proj.copy(
-                        workerName =
-                            workerName,
+            // ----------------------------------------------------
+            // Resolve worker
+            // ----------------------------------------------------
 
-                        managerName =
-                            managerName,
+            val resolvedWorkerUid =
+                when {
 
-                        laborCost =
-                            laborCost,
+                    workerUid.isNotBlank() ->
+                        workerUid.trim()
 
-                        paidAmount =
-                            paidAmount,
+                    workerName.isBlank() ->
+                        ""
 
-                        updatedAt =
-                            System.currentTimeMillis()
-                    )
+                    else -> {
 
-                repository.updateProject(
-                    updated
+                        allWorkers.value
+                            .firstOrNull { worker ->
+
+                                worker.workshopId ==
+                                        currentUser.workshopId &&
+                                        (
+                                            worker.name ==
+                                                    workerName ||
+                                                    worker.phone ==
+                                                    workerName ||
+                                                    "${worker.name} (${worker.phone})" ==
+                                                    workerName
+                                            )
+                            }
+                            ?.uid
+                            .orEmpty()
+                    }
+                }
+
+            // ----------------------------------------------------
+            // Preserve old assignment if name cannot be resolved
+            // ----------------------------------------------------
+
+            val finalAssignedWorkers =
+                when {
+
+                    workerName.isBlank() ->
+                        ""
+
+                    resolvedWorkerUid.isNotBlank() ->
+                        resolvedWorkerUid
+
+                    else ->
+                        proj.assignedWorkers
+                }
+
+            val updated =
+                proj.copy(
+
+                    workerName =
+                        workerName,
+
+                    managerName =
+                        managerName,
+
+                    laborCost =
+                        laborCost,
+
+                    paidAmount =
+                        paidAmount,
+
+                    assignedWorkers =
+                        finalAssignedWorkers,
+
+                    workshopId =
+                        proj.workshopId
+                            .ifBlank {
+                                currentUser.workshopId
+                            },
+
+                    updatedAt =
+                        System.currentTimeMillis()
                 )
 
-                syncProject(
-                    updated
-                )
-            }
+            repository.updateProject(
+                updated
+            )
+
+            syncProject(
+                updated
+            )
         }
     }
 
@@ -2675,27 +3315,21 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                     ?: return@launch
 
             val isAdmin =
-                _currentRole.value == "ADMIN"
+                _currentRole.value
+                    .trim()
+                    .uppercase() == "ADMIN"
 
-            /*
-             * العامل لا يستطيع تغيير الحقول المالية
-             * أو assignedWorkers من خلال هذا المسار.
-             *
-             * Rules تحمي Firestore أيضاً.
-             */
             val existing =
                 repository
                     .getProject(project.id)
                     .firstOrNull()
-
-            if (existing == null) {
-                return@launch
-            }
+                    ?: return@launch
 
             val updatedProject =
                 if (isAdmin) {
 
                     project.copy(
+
                         workshopId =
                             existing.workshopId
                                 .ifBlank {
@@ -2709,6 +3343,7 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 } else {
 
                     project.copy(
+
                         laborCost =
                             existing.laborCost,
 
@@ -2742,6 +3377,44 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 updatedProject.id,
                 updatedProject.title
             )
+        }
+    }
+
+    // ============================================================
+    // UPDATE PROJECT ORDER STATUS
+    // ============================================================
+
+    fun updateProjectOrderStatus(
+        projectId: Long,
+        newStatus: String
+    ) {
+
+        viewModelScope.launch {
+
+            val proj =
+                repository
+                    .getProject(projectId)
+                    .firstOrNull()
+
+            if (proj != null) {
+
+                val updated =
+                    proj.copy(
+                        orderStatus =
+                            newStatus,
+
+                        updatedAt =
+                            System.currentTimeMillis()
+                    )
+
+                repository.updateProject(
+                    updated
+                )
+
+                syncProject(
+                    updated
+                )
+            }
         }
     }
 
@@ -2850,18 +3523,39 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val item =
                 ProjectItem(
-                    projectId = projId,
-                    materialKey = material.key,
-                    materialNameAr = material.nameAr,
-                    materialNameFr = material.nameFr,
-                    category = material.category,
-                    size = size,
-                    quantity = quantity,
-                    unit = unit,
+                    projectId =
+                        projId,
+
+                    materialKey =
+                        material.key,
+
+                    materialNameAr =
+                        material.nameAr,
+
+                    materialNameFr =
+                        material.nameFr,
+
+                    category =
+                        material.category,
+
+                    size =
+                        size,
+
+                    quantity =
+                        quantity,
+
+                    unit =
+                        unit,
+
                     unitPrice =
                         material.defaultUnitPrice,
-                    notes = notes,
-                    iconType = material.iconType,
+
+                    notes =
+                        notes,
+
+                    iconType =
+                        material.iconType,
+
                     workshopId =
                         _currentUser.value
                             ?.workshopId
@@ -2905,14 +3599,29 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val customMat =
                 CustomMaterial(
-                    nameAr = nameAr,
-                    nameFr = nameFr,
-                    category = category,
-                    defaultSize = size,
-                    defaultUnit = unit,
-                    defaultPrice = price,
-                    imageUri = imageUri,
-                    notes = notes
+                    nameAr =
+                        nameAr,
+
+                    nameFr =
+                        nameFr,
+
+                    category =
+                        category,
+
+                    defaultSize =
+                        size,
+
+                    defaultUnit =
+                        unit,
+
+                    defaultPrice =
+                        price,
+
+                    imageUri =
+                        imageUri,
+
+                    notes =
+                        notes
                 )
 
             val customId =
@@ -2930,29 +3639,42 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
                 val item =
                     ProjectItem(
-                        projectId = projId,
+                        projectId =
+                            projId,
+
                         materialKey =
                             "custom_$customId",
+
                         materialNameAr =
                             nameAr,
+
                         materialNameFr =
                             nameFr,
+
                         category =
                             category,
+
                         size =
                             size,
+
                         quantity =
                             quantity,
+
                         unit =
                             unit,
+
                         unitPrice =
                             price,
+
                         notes =
                             notes,
+
                         iconType =
                             "custom",
+
                         imageUri =
                             imageUri,
+
                         workshopId =
                             _currentUser.value
                                 ?.workshopId
@@ -3016,26 +3738,16 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    /*
-     * ProjectItem الحالي لا يحتوي workerId حسب النموذج المرسل.
-     *
-     * لذلك نحاول الاحتفاظ بالـ workerId الموجود
-     * من خلال المستخدم الحالي عند الحاجة.
-     */
-    private fun itemWorkerId(
-        item: ProjectItem
-    ): String {
-
-        return _currentUser.value
-            ?.uid
-            ?: ""
-    }
+    // ============================================================
+    // DELETE CUSTOM MATERIAL
+    // ============================================================
 
     fun deleteCustomMaterial(
         id: Long
     ) {
 
         viewModelScope.launch {
+
             repository.deleteCustomMaterial(
                 id
             )
@@ -3053,7 +3765,9 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
         if (newQty <= 0) {
 
-            deleteItem(item)
+            deleteItem(
+                item
+            )
 
             return
         }
@@ -3062,7 +3776,8 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
 
             val updated =
                 item.copy(
-                    quantity = newQty
+                    quantity =
+                        newQty
                 )
 
             repository
@@ -3104,6 +3819,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    // ============================================================
+    // DELETE ITEM
+    // ============================================================
+
     fun deleteItem(
         item: ProjectItem
     ) {
@@ -3127,6 +3846,10 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
             )
         }
     }
+
+    // ============================================================
+    // TOGGLE PURCHASED
+    // ============================================================
 
     fun toggleItemPurchased(
         item: ProjectItem
@@ -3222,36 +3945,43 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                         "25mm",
                         coudesPprQty
                     ),
+
                     Triple(
                         "ppr_te",
                         "25mm",
                         tesPprQty
                     ),
+
                     Triple(
                         "ppr_tube",
                         "25mm",
                         tubePprMeters
                     ),
+
                     Triple(
                         "ppr_coude_filete",
                         "25x1/2\"",
                         coudesWallQty
                     ),
+
                     Triple(
                         "ppr_vanne",
                         "25mm",
                         vanneQty
                     ),
+
                     Triple(
                         "pvc_tube",
                         "110mm",
                         tubePvc110Meters
                     ),
+
                     Triple(
                         "pvc_tube",
                         "50mm",
                         tubePvc50Meters
                     ),
+
                     Triple(
                         "teflon",
                         "قياسي (12mm x 12m)",
@@ -3260,7 +3990,11 @@ class PlumberViewModel(application: Application) : AndroidViewModel(application)
                 )
 
             estimates.forEach {
-                    (matKey, size, qty) ->
+                    (
+                        matKey,
+                        size,
+                        qty
+                        ) ->
 
                 val matObj =
                     PlumbingLibraryData
