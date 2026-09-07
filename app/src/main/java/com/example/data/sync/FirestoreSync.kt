@@ -116,7 +116,6 @@ object FirestoreSync {
     private fun readAssignedWorkers(
         doc: DocumentSnapshot
     ): String {
-
         return when (val value = doc.get("assignedWorkers")) {
 
             is List<*> -> {
@@ -144,7 +143,6 @@ object FirestoreSync {
     private fun firebasePermissionDenied(
         e: Exception
     ): Boolean {
-
         return e is FirebaseFirestoreException &&
                 e.code ==
                 FirebaseFirestoreException.Code.PERMISSION_DENIED
@@ -164,90 +162,54 @@ object FirestoreSync {
         val db = getDb() ?: return
 
         if (!isFirebaseAuthenticated()) {
-
-            Log.w(
-                TAG,
-                "Firebase authentication required."
-            )
-
+            Log.w(TAG, "Firebase authentication required.")
             return
         }
 
-        val cleanWorkshopId =
-            workshopId.trim()
+        val cleanWorkshopId = workshopId.trim()
 
         if (cleanWorkshopId.isBlank()) {
-
-            Log.w(
-                TAG,
-                "workshopId is empty. Realtime sync skipped."
-            )
-
+            Log.w(TAG, "workshopId is empty. Realtime sync skipped.")
             return
         }
 
-        val normalizedRole =
-            normalizeRole(userRole)
-
-        val isManagement =
-            isManagementRole(normalizedRole)
+        val normalizedRole = normalizeRole(userRole)
+        val isManagement = isManagementRole(normalizedRole)
 
         val targetUid =
-            workerUid
-                .trim()
-                .ifBlank {
-                    getCurrentUserUid()
-                }
+            workerUid.trim().ifBlank {
+                getCurrentUserUid()
+            }
 
         if (targetUid.isBlank()) {
-
-            Log.w(
-                TAG,
-                "Target UID is empty."
-            )
-
+            Log.w(TAG, "Target UID is empty.")
             return
         }
 
         stopRealtimeListener()
 
-        val plumberDb =
-            PlumberDatabase.getDatabase(context)
-
-        val scope =
-            CoroutineScope(Dispatchers.IO)
+        val plumberDb = PlumberDatabase.getDatabase(context)
+        val scope = CoroutineScope(Dispatchers.IO)
 
         Log.d(
             TAG,
-            "Starting realtime sync: " +
-                    "role=$normalizedRole " +
-                    "uid=$targetUid " +
-                    "workshop=$cleanWorkshopId"
+            "Starting realtime sync: role=$normalizedRole uid=$targetUid workshop=$cleanWorkshopId"
         )
 
         // ========================================================
-        // PROJECTS
+        // PROJECTS LISTENER
         // ========================================================
 
         val projectsQuery =
             when {
-
                 isManagement -> {
-
                     db.collection("projects")
-                        .whereEqualTo(
-                            "workshopId",
-                            cleanWorkshopId
-                        )
+                        .whereEqualTo("workshopId", cleanWorkshopId)
                 }
 
                 normalizedRole == "WORKER" -> {
-
                     db.collection("projects")
-                        .whereEqualTo(
-                            "workshopId",
-                            cleanWorkshopId
-                        )
+                        .whereEqualTo("workshopId", cleanWorkshopId)
                         .whereArrayContains(
                             "assignedWorkers",
                             targetUid
@@ -255,10 +217,7 @@ object FirestoreSync {
                 }
 
                 else -> {
-                    Log.w(
-                        TAG,
-                        "Unknown role: $normalizedRole"
-                    )
+                    Log.w(TAG, "Unknown role: $normalizedRole")
                     return
                 }
             }
@@ -269,14 +228,11 @@ object FirestoreSync {
                 if (error != null) {
 
                     if (firebasePermissionDenied(error)) {
-
                         Log.w(
                             TAG,
                             "Projects permission denied: ${error.message}"
                         )
-
                     } else {
-
                         Log.e(
                             TAG,
                             "Projects listener error: ${error.message}",
@@ -287,9 +243,7 @@ object FirestoreSync {
                     return@addSnapshotListener
                 }
 
-                if (snapshot == null) {
-                    return@addSnapshotListener
-                }
+                if (snapshot == null) return@addSnapshotListener
 
                 scope.launch {
 
@@ -302,98 +256,91 @@ object FirestoreSync {
                                     ?: doc.id.toLongOrNull()
                                     ?: 0L
 
-                            if (id <= 0L) {
-                                return@forEach
-                            }
+                            if (id <= 0L) return@forEach
 
                             val projectWorkshopId =
                                 doc.getString("workshopId")
                                     ?: cleanWorkshopId
 
-                            if (
-                                projectWorkshopId !=
-                                cleanWorkshopId
-                            ) {
+                            if (projectWorkshopId != cleanWorkshopId) {
                                 return@forEach
                             }
 
-                            val project =
-                                Project(
+                            val project = Project(
+                                id = id,
 
-                                    id = id,
+                                title =
+                                    doc.getString("name")
+                                        ?: doc.getString("title")
+                                        ?: "مشروع جديد",
 
-                                    title =
-                                        doc.getString("name")
-                                            ?: doc.getString("title")
-                                            ?: "مشروع جديد",
+                                clientName =
+                                    doc.getString("clientName")
+                                        ?: "",
 
-                                    clientName =
-                                        doc.getString("clientName")
-                                            ?: "",
+                                location =
+                                    doc.getString("location")
+                                        ?: doc.getString("address")
+                                        ?: "",
 
-                                    location =
-                                        doc.getString("location")
-                                            ?: doc.getString("address")
-                                            ?: "",
+                                notes =
+                                    doc.getString("notes")
+                                        ?: "",
 
-                                    notes =
-                                        doc.getString("notes")
-                                            ?: "",
+                                workTypeKey =
+                                    doc.getString("workTypeKey")
+                                        ?: "CUSTOM",
 
-                                    workTypeKey =
-                                        doc.getString("workTypeKey")
-                                            ?: "CUSTOM",
+                                workTypeNameAr =
+                                    doc.getString("workTypeNameAr")
+                                        ?: "عمل مخصص",
 
-                                    workTypeNameAr =
-                                        doc.getString("workTypeNameAr")
-                                            ?: "عمل مخصص",
+                                workerName =
+                                    doc.getString("workerName")
+                                        ?: "",
 
-                                    workerName =
-                                        doc.getString("workerName")
-                                            ?: "",
+                                managerName =
+                                    doc.getString("managerName")
+                                        ?: "",
 
-                                    managerName =
-                                        doc.getString("managerName")
-                                            ?: "",
+                                storePhone =
+                                    doc.getString("storePhone")
+                                        ?: "",
 
-                                    storePhone =
-                                        doc.getString("storePhone")
-                                            ?: "",
+                                orderStatus =
+                                    doc.getString("orderStatus")
+                                        ?: "NEW",
 
-                                    orderStatus =
-                                        doc.getString("orderStatus")
-                                            ?: "NEW",
+                                assignedWorkers =
+                                    readAssignedWorkers(doc),
 
-                                    assignedWorkers =
-                                        readAssignedWorkers(doc),
+                                createdBy =
+                                    doc.getString("createdBy")
+                                        ?: "",
 
-                                    createdBy =
-                                        doc.getString("createdBy")
-                                            ?: "",
+                                status =
+                                    doc.getString("status")
+                                        ?: "NEW",
 
-                                    status =
-                                        doc.getString("status")
-                                            ?: "NEW",
+                                laborCost =
+                                    doc.getDouble("laborCost")
+                                        ?: 0.0,
 
-                                    laborCost =
-                                        doc.getDouble("laborCost")
-                                            ?: 0.0,
+                                paidAmount =
+                                    doc.getDouble("paidAmount")
+                                        ?: 0.0,
 
-                                    paidAmount =
-                                        doc.getDouble("paidAmount")
-                                            ?: 0.0,
+                                workshopId =
+                                    projectWorkshopId,
 
-                                    workshopId =
-                                        projectWorkshopId,
+                                createdAt =
+                                    doc.getLong("createdAt")
+                                        ?: System.currentTimeMillis(),
 
-                                    createdAt =
-                                        doc.getLong("createdAt")
-                                            ?: System.currentTimeMillis(),
-
-                                    updatedAt =
-                                        doc.getLong("updatedAt")
-                                            ?: System.currentTimeMillis()
-                                )
+                                updatedAt =
+                                    doc.getLong("updatedAt")
+                                        ?: System.currentTimeMillis()
+                            )
 
                             plumberDb
                                 .projectDao()
@@ -412,7 +359,7 @@ object FirestoreSync {
             }
 
         // ========================================================
-        // PROJECT ITEMS
+        // PROJECT ITEMS LISTENER
         // ========================================================
 
         val projectItemsQuery =
@@ -443,14 +390,11 @@ object FirestoreSync {
                 if (error != null) {
 
                     if (firebasePermissionDenied(error)) {
-
                         Log.w(
                             TAG,
                             "Project items permission denied: ${error.message}"
                         )
-
                     } else {
-
                         Log.e(
                             TAG,
                             "Project items listener error",
@@ -461,9 +405,7 @@ object FirestoreSync {
                     return@addSnapshotListener
                 }
 
-                if (snapshot == null) {
-                    return@addSnapshotListener
-                }
+                if (snapshot == null) return@addSnapshotListener
 
                 scope.launch {
 
@@ -480,82 +422,78 @@ object FirestoreSync {
                                 doc.getLong("projectId")
                                     ?: 0L
 
-                            if (
-                                id <= 0L ||
-                                projectId <= 0L
-                            ) {
+                            if (id <= 0L || projectId <= 0L) {
                                 return@forEach
                             }
 
-                            val item =
-                                ProjectItem(
+                            val item = ProjectItem(
 
-                                    id = id,
+                                id = id,
 
-                                    projectId = projectId,
+                                projectId = projectId,
 
-                                    materialKey =
-                                        doc.getString("materialKey")
-                                            ?: doc.getString("materialId")
-                                            ?: "custom",
+                                materialKey =
+                                    doc.getString("materialKey")
+                                        ?: doc.getString("materialId")
+                                        ?: "custom",
 
-                                    materialNameAr =
-                                        doc.getString("materialNameAr")
-                                            ?: doc.getString("materialName")
-                                            ?: "مادة",
+                                materialNameAr =
+                                    doc.getString("materialNameAr")
+                                        ?: doc.getString("materialName")
+                                        ?: "مادة",
 
-                                    materialNameFr =
-                                        doc.getString("materialNameFr")
-                                            ?: "",
+                                materialNameFr =
+                                    doc.getString("materialNameFr")
+                                        ?: "",
 
-                                    category =
-                                        doc.getString("category")
-                                            ?: "CUSTOM",
+                                category =
+                                    doc.getString("category")
+                                        ?: "CUSTOM",
 
-                                    size =
-                                        doc.getString("size")
-                                            ?: "",
+                                size =
+                                    doc.getString("size")
+                                        ?: "",
 
-                                    quantity =
-                                        doc.getDouble("quantity")
-                                            ?: 1.0,
+                                quantity =
+                                    doc.getDouble("quantity")
+                                        ?: 1.0,
 
-                                    unit =
-                                        doc.getString("unit")
-                                            ?: "قطعة",
+                                unit =
+                                    doc.getString("unit")
+                                        ?: "قطعة",
 
-                                    unitPrice =
-                                        doc.getDouble("unitPrice")
-                                            ?: 0.0,
+                                unitPrice =
+                                    doc.getDouble("unitPrice")
+                                        ?: 0.0,
 
-                                    standardPipeLengthMeters =
-                                        doc.getDouble(
-                                            "standardPipeLengthMeters"
-                                        ) ?: 4.0,
+                                standardPipeLengthMeters =
+                                    doc.getDouble(
+                                        "standardPipeLengthMeters"
+                                    ) ?: 4.0,
 
-                                    isPurchased =
-                                        doc.getBoolean("isPurchased")
-                                            ?: false,
+                                isPurchased =
+                                    doc.getBoolean("isPurchased")
+                                        ?: false,
 
-                                    notes =
-                                        doc.getString("notes")
-                                            ?: "",
+                                notes =
+                                    doc.getString("notes")
+                                        ?: "",
 
-                                    iconType =
-                                        doc.getString("iconType")
-                                            ?: "elbow",
+                                iconType =
+                                    doc.getString("iconType")
+                                        ?: "elbow",
 
-                                    imageUri =
-                                        doc.getString("imageUri"),
+                                imageUri =
+                                    doc.getString("imageUri"),
 
-                                    workshopId =
-                                        doc.getString("workshopId")
-                                            ?: cleanWorkshopId,
+                                workshopId =
+                                    doc.getString("workshopId")
+                                        ?: cleanWorkshopId,
 
-                                    createdAt =
-                                        doc.getLong("createdAt")
-                                            ?: System.currentTimeMillis()
-                                )
+                                createdAt =
+                                    doc.getLong("createdAt")
+                                        ?: System.currentTimeMillis()
+                            )
 
                             plumberDb
                                 .projectItemDao()
@@ -582,10 +520,7 @@ object FirestoreSync {
         projectItemsListenerRegistration?.remove()
         projectItemsListenerRegistration = null
 
-        Log.d(
-            TAG,
-            "Realtime listeners stopped."
-        )
+        Log.d(TAG, "Realtime listeners stopped.")
     }
 
     // ============================================================
@@ -599,16 +534,13 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val currentUid =
-            getCurrentUserUid()
+        val currentUid = getCurrentUserUid()
 
         if (currentUid.isBlank()) {
-
             Log.w(
                 TAG,
                 "Cannot sync project: unauthenticated."
             )
-
             return
         }
 
@@ -619,12 +551,10 @@ object FirestoreSync {
             )
 
         if (currentWorkshop.isBlank()) {
-
             Log.w(
                 TAG,
                 "Cannot sync project: workshopId empty."
             )
-
             return
         }
 
@@ -633,51 +563,52 @@ object FirestoreSync {
                 project.assignedWorkers
             )
 
-        val projectMap =
-            mapOf(
-                "id" to project.id,
+        val projectMap = mapOf(
 
-                "name" to project.title,
-                "title" to project.title,
+            "id" to project.id,
 
-                "clientName" to project.clientName,
+            "name" to project.title,
 
-                "location" to project.location,
-                "address" to project.location,
+            "title" to project.title,
 
-                "notes" to project.notes,
+            "clientName" to project.clientName,
 
-                "workTypeKey" to project.workTypeKey,
-                "workTypeNameAr" to project.workTypeNameAr,
+            "location" to project.location,
 
-                "workerName" to project.workerName,
-                "managerName" to project.managerName,
+            "address" to project.location,
 
-                "storePhone" to project.storePhone,
+            "notes" to project.notes,
 
-                "orderStatus" to project.orderStatus,
+            "workTypeKey" to project.workTypeKey,
 
-                /*
-                 * مهم:
-                 *
-                 * يجب أن تكون هذه UIDs وليس أسماء العمال.
-                 */
-                "assignedWorkers" to assignedWorkers,
+            "workTypeNameAr" to project.workTypeNameAr,
 
-                "createdBy" to project.createdBy,
+            "workerName" to project.workerName,
 
-                "status" to project.status,
+            "managerName" to project.managerName,
 
-                "laborCost" to project.laborCost,
-                "paidAmount" to project.paidAmount,
+            "storePhone" to project.storePhone,
 
-                "workshopId" to currentWorkshop,
+            "orderStatus" to project.orderStatus,
 
-                "createdAt" to project.createdAt,
-                "updatedAt" to project.updatedAt,
+            "assignedWorkers" to assignedWorkers,
 
-                "updatedBy" to currentUid
-            )
+            "createdBy" to project.createdBy,
+
+            "status" to project.status,
+
+            "laborCost" to project.laborCost,
+
+            "paidAmount" to project.paidAmount,
+
+            "workshopId" to currentWorkshop,
+
+            "createdAt" to project.createdAt,
+
+            "updatedAt" to project.updatedAt,
+
+            "updatedBy" to currentUid
+        )
 
         db.collection("projects")
             .document(project.id.toString())
@@ -725,8 +656,7 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val currentUid =
-            getCurrentUserUid()
+        val currentUid = getCurrentUserUid()
 
         if (currentUid.isBlank()) {
 
@@ -740,8 +670,11 @@ object FirestoreSync {
 
         val currentWorkshop =
             if (item.workshopId.isNotBlank()) {
+
                 item.workshopId.trim()
+
             } else {
+
                 workshopId.trim()
             }
 
@@ -755,66 +688,68 @@ object FirestoreSync {
             return
         }
 
-        /*
-         * workerId الصريح له الأولوية.
-         *
-         * هذا مهم جداً عندما يقوم المدير بتعديل
-         * عنصر خاص بعامل.
-         */
         val ownerWorkerId =
-            workerId
-                .trim()
-                .ifBlank {
-                    currentUid
-                }
+            workerId.trim().ifBlank {
+                currentUid
+            }
 
-        val itemMap =
-            mapOf(
-                "id" to item.id,
+        val itemMap = mapOf(
 
-                "projectId" to item.projectId,
+            "id" to item.id,
 
-                "materialId" to item.materialKey,
-                "materialKey" to item.materialKey,
+            "projectId" to item.projectId,
 
-                "materialName" to item.materialNameAr,
-                "materialNameAr" to item.materialNameAr,
-                "materialNameFr" to item.materialNameFr,
+            "materialId" to item.materialKey,
 
-                "category" to item.category,
-                "size" to item.size,
+            "materialKey" to item.materialKey,
 
-                "quantity" to item.quantity,
-                "unit" to item.unit,
+            "materialName" to item.materialNameAr,
 
-                "unitPrice" to item.unitPrice,
+            "materialNameAr" to item.materialNameAr,
 
-                "standardPipeLengthMeters" to
-                        item.standardPipeLengthMeters,
+            "materialNameFr" to item.materialNameFr,
 
-                "isPurchased" to item.isPurchased,
+            "category" to item.category,
 
-                "notes" to item.notes,
+            "size" to item.size,
 
-                "iconType" to item.iconType,
-                "imageUri" to item.imageUri,
+            "quantity" to item.quantity,
 
-                "workerId" to ownerWorkerId,
-                "workerName" to workerName,
+            "unit" to item.unit,
 
-                "workshopId" to currentWorkshop,
+            "unitPrice" to item.unitPrice,
 
-                "createdAt" to item.createdAt,
+            "standardPipeLengthMeters" to
+                    item.standardPipeLengthMeters,
 
-                "updatedAt" to System.currentTimeMillis(),
+            "isPurchased" to item.isPurchased,
 
-                "updatedBy" to currentUid
-            )
+            "notes" to item.notes,
+
+            "iconType" to item.iconType,
+
+            "imageUri" to item.imageUri,
+
+            "workerId" to ownerWorkerId,
+
+            "workerName" to workerName,
+
+            "workshopId" to currentWorkshop,
+
+            "createdAt" to item.createdAt,
+
+            "updatedAt" to System.currentTimeMillis(),
+
+            "updatedBy" to currentUid
+        )
 
         val docId =
             if (item.id > 0L) {
+
                 item.id.toString()
+
             } else {
+
                 "${item.projectId}_${item.materialKey}_${item.size}"
             }
 
@@ -956,16 +891,25 @@ object FirestoreSync {
     // ============================================================
 
     fun syncUserToFirestore(
-        user: TeamUser
+        user: TeamUser,
+        onResult: ((Boolean, String) -> Unit)? = null
     ) {
 
-        val db = getDb() ?: return
+        val db = getDb()
 
-        val currentUid =
-            getCurrentUserUid()
+        if (db == null) {
 
-        if (
-            currentUid.isBlank() ||
+            onResult?.invoke(
+                false,
+                "Cloud Firestore غير متصل."
+            )
+
+            return
+        }
+
+        val currentUid = getCurrentUserUid()
+
+        if (currentUid.isBlank() ||
             currentUid != user.uid
         ) {
 
@@ -974,21 +918,34 @@ object FirestoreSync {
                 "User UID security check failed."
             )
 
+            onResult?.invoke(
+                false,
+                "خطأ أمني: UID غير متطابق."
+            )
+
             return
         }
 
-        val userMap =
-            mapOf(
-                "uid" to user.uid,
-                "name" to user.name,
-                "phone" to user.phone,
-                "email" to user.email,
-                "role" to normalizeRole(user.role),
-                "active" to user.active,
-                "workshopId" to user.workshopId,
-                "createdAt" to user.createdAt,
-                "lastLoginAt" to user.lastLoginAt
-            )
+        val userMap = mapOf(
+
+            "uid" to user.uid,
+
+            "name" to user.name,
+
+            "phone" to user.phone,
+
+            "email" to user.email,
+
+            "role" to normalizeRole(user.role),
+
+            "active" to user.active,
+
+            "workshopId" to user.workshopId,
+
+            "createdAt" to user.createdAt,
+
+            "lastLoginAt" to user.lastLoginAt
+        )
 
         db.collection("users")
             .document(user.uid)
@@ -1002,6 +959,11 @@ object FirestoreSync {
                     TAG,
                     "User profile synced: ${user.uid}"
                 )
+
+                onResult?.invoke(
+                    true,
+                    "تم حفظ بيانات المستخدم."
+                )
             }
             .addOnFailureListener { e ->
 
@@ -1010,6 +972,12 @@ object FirestoreSync {
                     "User profile sync failed: ${e.message}",
                     e
                 )
+
+                onResult?.invoke(
+                    false,
+                    e.localizedMessage
+                        ?: "فشل حفظ بيانات المستخدم."
+                )
             }
     }
 
@@ -1017,30 +985,30 @@ object FirestoreSync {
     // MANAGEMENT CREATE USER PROFILE
     // ============================================================
 
-    /**
-     * الاسم الذي يستخدمه PlumberViewModel.
-     *
-     * يسمح للمدير بإنشاء users/{workerUid}.
-     *
-     * Firebase Authentication للحساب يتم إنشاؤه
-     * من ViewModel.
-     *
-     * هذه الدالة تنشئ ملف Firestore فقط.
-     */
     fun createUserProfileByAdmin(
-        user: TeamUser
+        user: TeamUser,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
 
-        val db = getDb() ?: return
+        val db = getDb()
 
-        val managerUid =
-            getCurrentUserUid()
+        if (db == null) {
+
+            onResult(
+                false,
+                "Cloud Firestore غير متصل."
+            )
+
+            return
+        }
+
+        val managerUid = getCurrentUserUid()
 
         if (managerUid.isBlank()) {
 
-            Log.w(
-                TAG,
-                "Cannot create worker profile: manager unauthenticated."
+            onResult(
+                false,
+                "لا توجد جلسة مدير صالحة."
             )
 
             return
@@ -1048,49 +1016,50 @@ object FirestoreSync {
 
         if (user.uid.isBlank()) {
 
-            Log.w(
-                TAG,
-                "Cannot create worker profile: UID empty."
+            onResult(
+                false,
+                "UID العامل فارغ."
             )
 
             return
         }
 
-        if (
-            normalizeRole(user.role) != "WORKER"
-        ) {
+        if (normalizeRole(user.role) != "WORKER") {
 
-            Log.w(
-                TAG,
-                "Only WORKER profile can be created here."
+            onResult(
+                false,
+                "يمكن إنشاء حساب WORKER فقط."
             )
 
             return
         }
 
-        val data =
-            mapOf(
-                "uid" to user.uid,
-                "name" to user.name,
-                "phone" to user.phone,
-                "email" to user.email,
+        val data = mapOf(
 
-                "role" to "WORKER",
+            "uid" to user.uid,
 
-                "active" to user.active,
+            "name" to user.name,
 
-                "workshopId" to user.workshopId,
+            "phone" to user.phone,
 
-                "createdAt" to user.createdAt,
+            "email" to user.email,
 
-                "lastLoginAt" to user.lastLoginAt,
+            "role" to "WORKER",
 
-                "createdBy" to managerUid,
+            "active" to user.active,
 
-                "updatedBy" to managerUid,
+            "workshopId" to user.workshopId,
 
-                "updatedAt" to System.currentTimeMillis()
-            )
+            "createdAt" to user.createdAt,
+
+            "lastLoginAt" to user.lastLoginAt,
+
+            "createdBy" to managerUid,
+
+            "updatedBy" to managerUid,
+
+            "updatedAt" to System.currentTimeMillis()
+        )
 
         db.collection("users")
             .document(user.uid)
@@ -1104,20 +1073,28 @@ object FirestoreSync {
                     TAG,
                     "Worker profile created: ${user.uid}"
                 )
+
+                onResult(
+                    true,
+                    "تم إنشاء ملف العامل في Firestore."
+                )
             }
             .addOnFailureListener { e ->
 
                 Log.e(
                     TAG,
-                    "Worker profile creation failed: ${e.message}",
+                    "Worker profile creation failed",
                     e
+                )
+
+                onResult(
+                    false,
+                    e.localizedMessage
+                        ?: "فشل إنشاء ملف العامل."
                 )
             }
     }
 
-    /**
-     * اسم بديل للتوافق مع النسخة السابقة.
-     */
     fun syncUserProfileAsManagement(
         user: TeamUser
     ) {
@@ -1129,19 +1106,29 @@ object FirestoreSync {
     // ============================================================
 
     fun updateUserProfileByAdmin(
-        user: TeamUser
+        user: TeamUser,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
 
-        val db = getDb() ?: return
+        val db = getDb()
 
-        val managerUid =
-            getCurrentUserUid()
+        if (db == null) {
+
+            onResult(
+                false,
+                "Cloud Firestore غير متصل."
+            )
+
+            return
+        }
+
+        val managerUid = getCurrentUserUid()
 
         if (managerUid.isBlank()) {
 
-            Log.w(
-                TAG,
-                "Cannot update worker profile: unauthenticated."
+            onResult(
+                false,
+                "لا توجد جلسة مدير صالحة."
             )
 
             return
@@ -1149,43 +1136,44 @@ object FirestoreSync {
 
         if (user.uid.isBlank()) {
 
-            Log.w(
-                TAG,
-                "Cannot update worker profile: UID empty."
+            onResult(
+                false,
+                "UID العامل فارغ."
             )
 
             return
         }
 
-        if (
-            normalizeRole(user.role) != "WORKER"
-        ) {
+        if (normalizeRole(user.role) != "WORKER") {
 
-            Log.w(
-                TAG,
-                "Only WORKER profile can be updated."
+            onResult(
+                false,
+                "يمكن تحديث WORKER فقط."
             )
 
             return
         }
 
-        val data =
-            mapOf(
-                "uid" to user.uid,
-                "name" to user.name,
-                "phone" to user.phone,
-                "email" to user.email,
+        val data = mapOf(
 
-                "role" to "WORKER",
+            "uid" to user.uid,
 
-                "active" to user.active,
+            "name" to user.name,
 
-                "workshopId" to user.workshopId,
+            "phone" to user.phone,
 
-                "updatedBy" to managerUid,
+            "email" to user.email,
 
-                "updatedAt" to System.currentTimeMillis()
-            )
+            "role" to "WORKER",
+
+            "active" to user.active,
+
+            "workshopId" to user.workshopId,
+
+            "updatedBy" to managerUid,
+
+            "updatedAt" to System.currentTimeMillis()
+        )
 
         db.collection("users")
             .document(user.uid)
@@ -1199,13 +1187,24 @@ object FirestoreSync {
                     TAG,
                     "Worker profile updated: ${user.uid}"
                 )
+
+                onResult(
+                    true,
+                    "تم تحديث بيانات العامل."
+                )
             }
             .addOnFailureListener { e ->
 
                 Log.e(
                     TAG,
-                    "Worker profile update failed: ${e.message}",
+                    "Worker profile update failed",
                     e
+                )
+
+                onResult(
+                    false,
+                    e.localizedMessage
+                        ?: "فشل تحديث بيانات العامل."
                 )
             }
     }
@@ -1226,8 +1225,7 @@ object FirestoreSync {
             return
         }
 
-        val uid =
-            getCurrentUserUid()
+        val uid = getCurrentUserUid()
 
         if (uid.isBlank()) {
 
@@ -1245,13 +1243,6 @@ object FirestoreSync {
     // FETCH USER BY UID
     // ============================================================
 
-    /**
-     * الطريقة الأساسية لتسجيل الدخول.
-     *
-     * FirebaseAuth UID
-     *       ↓
-     * users/{UID}
-     */
     fun fetchUserFromFirestoreByUid(
         uid: String,
         onResult: (TeamUser?) -> Unit
@@ -1265,8 +1256,7 @@ object FirestoreSync {
             return
         }
 
-        val cleanUid =
-            uid.trim()
+        val cleanUid = uid.trim()
 
         if (cleanUid.isBlank()) {
 
@@ -1328,11 +1318,6 @@ object FirestoreSync {
     // FETCH USER BY PHONE OR EMAIL
     // ============================================================
 
-    /**
-     * تستخدم للبحث الإداري/البيانات القديمة.
-     *
-     * لا تعتمد عليها في تسجيل الدخول الأساسي.
-     */
     fun fetchUserFromFirestoreByPhoneOrEmail(
         query: String,
         onResult: (TeamUser?) -> Unit
@@ -1346,8 +1331,7 @@ object FirestoreSync {
             return
         }
 
-        val cleanQuery =
-            query.trim()
+        val cleanQuery = query.trim()
 
         if (cleanQuery.isBlank()) {
 
@@ -1459,27 +1443,24 @@ object FirestoreSync {
             phone =
                 doc.getString("phone")
                     ?: if (
-                        fallbackQuery.isNotBlank() &&
-                        !fallbackQuery.contains("@")
-                    ) {
-                        fallbackQuery
-                    } else {
-                        ""
-                    },
+                    fallbackQuery.isNotBlank() &&
+                    !fallbackQuery.contains("@")
+                ) {
+                    fallbackQuery
+                } else {
+                    ""
+                },
 
             email =
                 doc.getString("email")
                     ?: if (
-                        fallbackQuery.contains("@")
-                    ) {
-                        fallbackQuery
-                    } else {
-                        ""
-                    },
+                    fallbackQuery.contains("@")
+                ) {
+                    fallbackQuery
+                } else {
+                    ""
+                },
 
-            /*
-             * NEVER store password in Firestore.
-             */
             password = "",
 
             role = role,
@@ -1512,32 +1493,31 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val uid =
-            getCurrentUserUid()
+        val uid = getCurrentUserUid()
 
-        if (uid.isBlank()) {
-            return
-        }
+        if (uid.isBlank()) return
 
         val cleanWorkshopId =
             workshopId.trim()
 
-        if (cleanWorkshopId.isBlank()) {
-            return
-        }
+        if (cleanWorkshopId.isBlank()) return
 
-        val data =
-            mapOf(
-                "storeName" to storeName,
-                "storePhone" to storePhone,
-                "storeWhatsapp" to storeWhatsapp,
-                "managerName" to managerName,
+        val data = mapOf(
 
-                "workshopId" to cleanWorkshopId,
+            "storeName" to storeName,
 
-                "updatedAt" to System.currentTimeMillis(),
-                "updatedBy" to uid
-            )
+            "storePhone" to storePhone,
+
+            "storeWhatsapp" to storeWhatsapp,
+
+            "managerName" to managerName,
+
+            "workshopId" to cleanWorkshopId,
+
+            "updatedAt" to System.currentTimeMillis(),
+
+            "updatedBy" to uid
+        )
 
         db.collection("store_settings")
             .document(cleanWorkshopId)
@@ -1576,9 +1556,7 @@ object FirestoreSync {
         val currentUid =
             getCurrentUserUid()
 
-        if (currentUid.isBlank()) {
-            return
-        }
+        if (currentUid.isBlank()) return
 
         val cleanWorkshopId =
             workshopId.trim()
@@ -1606,19 +1584,24 @@ object FirestoreSync {
             return
         }
 
-        val data =
-            mapOf(
-                "workerId" to currentUid,
-                "workerName" to log.workerName,
-                "action" to log.action,
-                "projectId" to log.projectId,
-                "projectName" to log.projectName,
-                "timestamp" to log.timestamp,
+        val data = mapOf(
 
-                "workshopId" to cleanWorkshopId,
+            "workerId" to currentUid,
 
-                "updatedBy" to currentUid
-            )
+            "workerName" to log.workerName,
+
+            "action" to log.action,
+
+            "projectId" to log.projectId,
+
+            "projectName" to log.projectName,
+
+            "timestamp" to log.timestamp,
+
+            "workshopId" to cleanWorkshopId,
+
+            "updatedBy" to currentUid
+        )
 
         db.collection("audit_logs")
             .add(data)
@@ -1723,10 +1706,6 @@ object FirestoreSync {
                     return@addOnSuccessListener
                 }
 
-                /*
-                 * دعم الحالة التي يكون فيها Document ID
-                 * هو نفسه Sync Code.
-                 */
                 db.collection("workshops")
                     .document(cleanCode)
                     .get()
@@ -1834,26 +1813,26 @@ object FirestoreSync {
                 val now =
                     System.currentTimeMillis()
 
-                val data =
-                    mapOf(
-                        "requestId" to requestId,
+                val data = mapOf(
 
-                        "workerUid" to user.uid,
+                    "requestId" to requestId,
 
-                        "workerName" to user.name,
+                    "workerUid" to user.uid,
 
-                        "workerEmail" to user.email,
+                    "workerName" to user.name,
 
-                        "workshopId" to workshopId,
+                    "workerEmail" to user.email,
 
-                        "syncCode" to syncCode,
+                    "workshopId" to workshopId,
 
-                        "status" to "pending",
+                    "syncCode" to syncCode,
 
-                        "createdAt" to now,
+                    "status" to "pending",
 
-                        "updatedAt" to now
-                    )
+                    "createdAt" to now,
+
+                    "updatedAt" to now
+                )
 
                 requestRef
                     .set(data)
@@ -1890,9 +1869,8 @@ object FirestoreSync {
         onRequestsUpdated: (List<Map<String, Any>>) -> Unit
     ): ListenerRegistration? {
 
-        val db =
-            getDb()
-                ?: return null
+        val db = getDb()
+            ?: return null
 
         val cleanWorkshopId =
             workshopId.trim()
@@ -1938,7 +1916,6 @@ object FirestoreSync {
                         doc.data
                             ?.toMutableMap()
                             ?.apply {
-
                                 putIfAbsent(
                                     "requestId",
                                     doc.id
@@ -2028,16 +2005,19 @@ object FirestoreSync {
                 }
 
                 val requestWorkshopId =
-                    requestDoc.getString("workshopId")
-                        ?: ""
+                    requestDoc.getString(
+                        "workshopId"
+                    ) ?: ""
 
                 val requestWorkerUid =
-                    requestDoc.getString("workerUid")
-                        ?: ""
+                    requestDoc.getString(
+                        "workerUid"
+                    ) ?: ""
 
                 val status =
-                    requestDoc.getString("status")
-                        ?: ""
+                    requestDoc.getString(
+                        "status"
+                    ) ?: ""
 
                 if (
                     requestWorkshopId !=
@@ -2070,22 +2050,17 @@ object FirestoreSync {
                 val batch =
                     db.batch()
 
-                // ------------------------------------------------
-                // REQUEST
-                // ------------------------------------------------
-
                 batch.update(
                     requestRef,
                     mapOf(
+
                         "status" to "approved",
+
                         "approvedBy" to currentUid,
+
                         "updatedAt" to now
                     )
                 )
-
-                // ------------------------------------------------
-                // MEMBER
-                // ------------------------------------------------
 
                 val memberRef =
                     db.collection("workshops")
@@ -2095,19 +2070,22 @@ object FirestoreSync {
 
                 batch.set(
                     memberRef,
+
                     mapOf(
+
                         "uid" to cleanWorkerUid,
+
                         "role" to "worker",
+
                         "active" to true,
+
                         "joinedAt" to now,
+
                         "approvedBy" to currentUid
                     ),
+
                     SetOptions.merge()
                 )
-
-                // ------------------------------------------------
-                // USER
-                // ------------------------------------------------
 
                 val userRef =
                     db.collection("users")
@@ -2115,10 +2093,16 @@ object FirestoreSync {
 
                 batch.update(
                     userRef,
+
                     mapOf(
-                        "workshopId" to cleanWorkshopId,
+
+                        "workshopId" to
+                                cleanWorkshopId,
+
                         "active" to true,
+
                         "updatedAt" to now,
+
                         "updatedBy" to currentUid
                     )
                 )
@@ -2198,10 +2182,15 @@ object FirestoreSync {
         db.collection("joinRequests")
             .document(cleanRequestId)
             .update(
+
                 mapOf(
+
                     "status" to "rejected",
+
                     "rejectedBy" to currentUid,
-                    "updatedAt" to System.currentTimeMillis()
+
+                    "updatedAt" to
+                            System.currentTimeMillis()
                 )
             )
             .addOnSuccessListener {
