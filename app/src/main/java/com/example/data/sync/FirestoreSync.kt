@@ -10,6 +10,7 @@ import com.example.data.model.ProjectItem
 import com.example.data.model.TeamUser
 
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
@@ -26,6 +27,10 @@ object FirestoreSync {
     private var projectsListenerRegistration: ListenerRegistration? = null
     private var projectItemsListenerRegistration: ListenerRegistration? = null
 
+    // ============================================================
+    // FIREBASE
+    // ============================================================
+
     private fun getDb(): FirebaseFirestore? {
         return try {
             FirebaseFirestore.getInstance()
@@ -40,10 +45,9 @@ object FirestoreSync {
     }
 
     /**
-     * الحصول على UID للمستخدم الحالي في Firebase Authentication.
+     * الحصول على UID للمستخدم الحالي.
      *
-     * هذا هو المصدر الأساسي لهوية المستخدم.
-     * لا نعتمد على UID مخزن محلياً إذا كان Firebase غير مسجل الدخول.
+     * Firebase Authentication هو المصدر الأساسي للهوية.
      */
     fun getCurrentUserUid(): String {
         return try {
@@ -62,9 +66,9 @@ object FirestoreSync {
     }
 
     /**
-     * التحقق من وجود جلسة Firebase صالحة.
+     * التحقق من وجود جلسة Firebase.
      */
-    private fun isFirebaseAuthenticated(): Boolean {
+    fun isFirebaseAuthenticated(): Boolean {
         return try {
             FirebaseAuth.getInstance()
                 .currentUser != null
@@ -74,9 +78,41 @@ object FirestoreSync {
     }
 
     /**
-     * الحصول على workshopId من المشروع إن وجد،
-     * وإلا استخدام القيمة المرسلة للدالة.
+     * تسجيل خروج Firebase.
+     *
+     * تستخدم من ViewModel عند الحاجة.
      */
+    fun signOutFirebase() {
+        try {
+            FirebaseAuth.getInstance().signOut()
+            stopRealtimeListener()
+
+            Log.d(
+                TAG,
+                "Firebase user signed out."
+            )
+        } catch (e: Exception) {
+            Log.e(
+                TAG,
+                "Error signing out Firebase user",
+                e
+            )
+        }
+    }
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+
+    private fun normalizeRole(role: String): String {
+        return when (role.trim().uppercase()) {
+            "ADMIN" -> "ADMIN"
+            "MANAGER" -> "MANAGER"
+            "WORKER" -> "WORKER"
+            else -> "WORKER"
+        }
+    }
+
     private fun resolveWorkshopId(
         projectWorkshopId: String,
         providedWorkshopId: String
@@ -89,11 +125,13 @@ object FirestoreSync {
     }
 
     /**
-     * تحويل assignedWorkers إلى List<String>.
+     * تحويل:
      *
-     * يدعم:
-     * - String قديم: "uid1,uid2"
-     * - List<String> حديثة
+     * "uid1,uid2"
+     *
+     * إلى:
+     *
+     * ["uid1", "uid2"]
      */
     private fun parseAssignedWorkers(
         assignedWorkers: String
@@ -103,6 +141,45 @@ object FirestoreSync {
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
+    }
+
+    /**
+     * قراءة assignedWorkers من Firestore.
+     *
+     * يدعم البيانات القديمة والجديدة.
+     */
+    private fun readAssignedWorkers(
+        doc: DocumentSnapshot
+    ): String {
+
+        return when (
+            val value = doc.get("assignedWorkers")
+        ) {
+
+            is List<*> -> {
+
+                value
+                    .filterIsInstance<String>()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(",")
+
+            }
+
+            is String -> {
+
+                value
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(",")
+
+            }
+
+            else -> ""
+        }
     }
 
     // ============================================================
@@ -127,7 +204,7 @@ object FirestoreSync {
         stopRealtimeListener()
 
         val normalizedRole =
-            userRole.trim().uppercase()
+            normalizeRole(userRole)
 
         val isAdmin =
             normalizedRole == "ADMIN"
@@ -139,34 +216,42 @@ object FirestoreSync {
             isAdmin || isManager
 
         val targetUid =
-            workerUid.ifBlank {
-                getCurrentUserUid()
-            }.trim()
+            workerUid
+                .ifBlank {
+                    getCurrentUserUid()
+                }
+                .trim()
 
         val cleanWorkshopId =
             workshopId.trim()
 
         if (!isFirebaseAuthenticated()) {
+
             Log.w(
                 TAG,
                 "Firebase user is not authenticated. Realtime sync not started."
             )
+
             return
         }
 
         if (targetUid.isBlank()) {
+
             Log.w(
                 TAG,
                 "Target UID is empty. Realtime sync not started."
             )
+
             return
         }
 
         if (cleanWorkshopId.isBlank()) {
+
             Log.w(
                 TAG,
                 "workshopId is blank. Realtime listener setup skipped."
             )
+
             return
         }
 
@@ -180,7 +265,7 @@ object FirestoreSync {
         )
 
         // ========================================================
-        // PROJECTS
+        // PROJECTS QUERY
         // ========================================================
 
         val projectsQuery =
@@ -197,8 +282,8 @@ object FirestoreSync {
             ) {
 
                 /*
-                 * العامل يرى المشاريع التي تحتوي على UID الخاص به
-                 * داخل assignedWorkers.
+                 * العامل يرى فقط المشاريع التي تحتوي
+                 * على Firebase UID الخاص به.
                  */
                 db.collection("projects")
                     .whereEqualTo(
@@ -214,7 +299,7 @@ object FirestoreSync {
 
                 Log.w(
                     TAG,
-                    "Invalid role '$normalizedRole'. Sync not started."
+                    "Invalid role '$normalizedRole'."
                 )
 
                 return
@@ -332,41 +417,8 @@ object FirestoreSync {
                                 doc.getLong("updatedAt")
                                     ?: System.currentTimeMillis()
 
-                            /*
-                             * assignedWorkers يجب أن تكون UIDs.
-                             *
-                             * ندعم أيضاً البيانات القديمة التي قد تكون String.
-                             */
                             val assignedWorkers =
-                                when (
-                                    val value =
-                                        doc.get("assignedWorkers")
-                                ) {
-
-                                    is List<*> -> {
-
-                                        value
-                                            .filterIsInstance<String>()
-                                            .map { it.trim() }
-                                            .filter { it.isNotBlank() }
-                                            .distinct()
-                                            .joinToString(",")
-
-                                    }
-
-                                    is String -> {
-
-                                        value
-                                            .split(",")
-                                            .map { it.trim() }
-                                            .filter { it.isNotBlank() }
-                                            .distinct()
-                                            .joinToString(",")
-
-                                    }
-
-                                    else -> ""
-                                }
+                                readAssignedWorkers(doc)
 
                             val projectWorkshopId =
                                 doc.getString("workshopId")
@@ -412,7 +464,7 @@ object FirestoreSync {
             }
 
         // ========================================================
-        // PROJECT ITEMS
+        // PROJECT ITEMS QUERY
         // ========================================================
 
         val projectItemsQuery =
@@ -552,15 +604,6 @@ object FirestoreSync {
                                 doc.getString("workshopId")
                                     ?: cleanWorkshopId
 
-                            /*
-                             * مهم:
-                             * workerId هو صاحب/مالك العنصر في سياق الورشة.
-                             * لا نستبدله بالمدير الذي قام بالتعديل.
-                             */
-                            val workerId =
-                                doc.getString("workerId")
-                                    ?: ""
-
                             val item =
                                 ProjectItem(
                                     id = id,
@@ -583,11 +626,6 @@ object FirestoreSync {
                                     createdAt = createdAt
                                 )
 
-                            /*
-                             * workerId لا يوجد في ProjectItem المحلي
-                             * حسب النموذج الحالي، لذلك نستخدمه فقط
-                             * في فلترة Firestore ولا نضيفه إلى Room.
-                             */
                             plumberDb
                                 .projectItemDao()
                                 .insertItem(item)
@@ -634,10 +672,12 @@ object FirestoreSync {
             getCurrentUserUid()
 
         if (currentUid.isBlank()) {
+
             Log.w(
                 TAG,
                 "Cannot sync project: no authenticated Firebase user."
             )
+
             return
         }
 
@@ -650,18 +690,17 @@ object FirestoreSync {
                 )
 
             if (currentWorkshop.isBlank()) {
+
                 Log.w(
                     TAG,
                     "Cannot sync project ${project.id}: workshopId is blank."
                 )
+
                 return
             }
 
             /*
-             * assignedWorkers يجب أن تحتوي على Firebase UIDs.
-             *
-             * إذا كانت البيانات القديمة تحتوي على أسماء،
-             * لن نقوم بتحويل الاسم إلى UID بشكل تخميني.
+             * يجب أن تحتوي assignedWorkers على UIDs.
              */
             val assignedWorkersArray =
                 parseAssignedWorkers(
@@ -717,7 +756,7 @@ object FirestoreSync {
 
                         Log.w(
                             TAG,
-                            "Sync project ${project.id} skipped (Permission Denied): ${e.message}"
+                            "Sync project ${project.id} denied: ${e.message}"
                         )
 
                     } else {
@@ -760,7 +799,7 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot sync project item: user is unauthenticated."
+                "Cannot sync project item: unauthenticated."
             )
 
             return
@@ -786,11 +825,12 @@ object FirestoreSync {
             }
 
             /*
-             * إذا تم تمرير workerId صراحة نستخدمه.
-             * وإلا نستخدم المستخدم الحالي.
+             * عند إنشاء عنصر جديد بواسطة العامل:
              *
-             * الهدف هو عدم تحويل workerId إلى UID المدير
-             * عندما يقوم المدير بتعديل مادة العامل.
+             * workerId = Firebase UID للعامل.
+             *
+             * عند قيام المدير بتعديل عنصر موجود،
+             * يجب أن يرسل ViewModel workerId الأصلي للعنصر.
              */
             val ownerWorkerId =
                 workerId
@@ -803,20 +843,25 @@ object FirestoreSync {
                 mutableMapOf<String, Any?>(
                     "id" to item.id,
                     "projectId" to item.projectId,
+
                     "materialId" to item.materialKey,
                     "materialKey" to item.materialKey,
+
                     "materialName" to item.materialNameAr,
                     "materialNameAr" to item.materialNameAr,
                     "materialNameFr" to item.materialNameFr,
+
                     "category" to item.category,
                     "size" to item.size,
+
                     "unit" to item.unit,
                     "quantity" to item.quantity,
 
                     /*
-                     * unitPrice يبقى موجوداً في البيانات،
-                     * لكن Firestore Rules يجب أن تمنع العامل
-                     * من تغييره.
+                     * السعر موجود.
+                     *
+                     * Rules تمنع العامل من تعديله
+                     * بعد إنشاء العنصر.
                      */
                     "unitPrice" to item.unitPrice,
 
@@ -824,6 +869,7 @@ object FirestoreSync {
                             item.standardPipeLengthMeters,
 
                     "isPurchased" to item.isPurchased,
+
                     "notes" to item.notes,
                     "iconType" to item.iconType,
                     "imageUri" to item.imageUri,
@@ -836,17 +882,13 @@ object FirestoreSync {
                     "createdAt" to item.createdAt,
                     "updatedAt" to System.currentTimeMillis(),
 
-                    /*
-                     * المستخدم الذي قام فعلياً بالحفظ.
-                     */
                     "updatedBy" to currentUid
                 )
 
-            /*
-             * لا نكتب null fields.
-             */
             val cleanItemMap =
-                itemMap.filterValues { it != null }
+                itemMap.filterValues {
+                    it != null
+                }
 
             val docId =
                 if (item.id > 0L) {
@@ -878,7 +920,7 @@ object FirestoreSync {
 
                         Log.w(
                             TAG,
-                            "Sync project item $docId skipped (Permission Denied): ${e.message}"
+                            "Sync project item $docId denied: ${e.message}"
                         )
 
                     } else {
@@ -915,55 +957,44 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot delete project: user is unauthenticated."
+                "Cannot delete project: unauthenticated."
             )
 
             return
         }
 
-        try {
+        db.collection("projects")
+            .document(projectId.toString())
+            .delete()
+            .addOnSuccessListener {
 
-            db.collection("projects")
-                .document(projectId.toString())
-                .delete()
-                .addOnSuccessListener {
+                Log.d(
+                    TAG,
+                    "Project deleted: $projectId"
+                )
+            }
+            .addOnFailureListener { e ->
 
-                    Log.d(
+                if (
+                    e is FirebaseFirestoreException &&
+                    e.code ==
+                    FirebaseFirestoreException.Code.PERMISSION_DENIED
+                ) {
+
+                    Log.w(
                         TAG,
-                        "Project deleted: $projectId"
+                        "Delete project denied: ${e.message}"
+                    )
+
+                } else {
+
+                    Log.e(
+                        TAG,
+                        "Error deleting project $projectId",
+                        e
                     )
                 }
-                .addOnFailureListener { e ->
-
-                    if (
-                        e is FirebaseFirestoreException &&
-                        e.code ==
-                        FirebaseFirestoreException.Code.PERMISSION_DENIED
-                    ) {
-
-                        Log.w(
-                            TAG,
-                            "Delete project $projectId denied: ${e.message}"
-                        )
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "Error deleting project $projectId: ${e.message}",
-                            e
-                        )
-                    }
-                }
-
-        } catch (e: Exception) {
-
-            Log.e(
-                TAG,
-                "Error deleteProjectFromFirestore: ${e.message}",
-                e
-            )
-        }
+            }
     }
 
     // ============================================================
@@ -980,68 +1011,56 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot delete project item: user is unauthenticated."
+                "Cannot delete project item: unauthenticated."
             )
 
             return
         }
 
-        try {
+        db.collection("project_items")
+            .document(itemId.toString())
+            .delete()
+            .addOnSuccessListener {
 
-            db.collection("project_items")
-                .document(itemId.toString())
-                .delete()
-                .addOnSuccessListener {
+                Log.d(
+                    TAG,
+                    "Project item deleted: $itemId"
+                )
+            }
+            .addOnFailureListener { e ->
 
-                    Log.d(
+                if (
+                    e is FirebaseFirestoreException &&
+                    e.code ==
+                    FirebaseFirestoreException.Code.PERMISSION_DENIED
+                ) {
+
+                    Log.w(
                         TAG,
-                        "Project item deleted: $itemId"
+                        "Delete project item denied: ${e.message}"
+                    )
+
+                } else {
+
+                    Log.e(
+                        TAG,
+                        "Error deleting project item $itemId",
+                        e
                     )
                 }
-                .addOnFailureListener { e ->
-
-                    if (
-                        e is FirebaseFirestoreException &&
-                        e.code ==
-                        FirebaseFirestoreException.Code.PERMISSION_DENIED
-                    ) {
-
-                        Log.w(
-                            TAG,
-                            "Delete project item $itemId denied: ${e.message}"
-                        )
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "Error deleting project item $itemId: ${e.message}",
-                            e
-                        )
-                    }
-                }
-
-        } catch (e: Exception) {
-
-            Log.e(
-                TAG,
-                "Error deleteProjectItemFromFirestore: ${e.message}",
-                e
-            )
-        }
+            }
     }
 
     // ============================================================
-    // USER SYNC
+    // USER SYNC - CURRENT USER
     // ============================================================
 
     /**
-     * مزامنة بيانات المستخدم مع:
+     * مزامنة المستخدم الحالي فقط.
      *
-     * users/{uid}
+     * لا يمكن لهذه الدالة كتابة users/{UID} لمستخدم آخر.
      *
-     * ملاحظة أمنية مهمة:
-     * لا يتم تخزين password إطلاقاً.
+     * password لا يتم تخزينه.
      */
     fun syncUserToFirestore(
         user: TeamUser
@@ -1056,19 +1075,12 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot sync user: user UID is empty."
+                "Cannot sync user: UID is empty."
             )
 
             return
         }
 
-        /*
-         * لا تسمح للتطبيق بكتابة بيانات مستخدم مختلف
-         * عن مستخدم Firebase الحالي.
-         *
-         * الاستثناء الوحيد هو عدم وجود جلسة Firebase،
-         * وفي هذه الحالة نرفض العملية أيضاً.
-         */
         if (
             currentUid.isBlank() ||
             currentUid != user.uid
@@ -1076,97 +1088,271 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot sync user ${user.uid}: UID does not match authenticated Firebase user."
+                "Security check failed. " +
+                        "Authenticated UID=$currentUid " +
+                        "Target UID=${user.uid}"
             )
 
             return
         }
 
-        try {
+        val normalizedRole =
+            normalizeRole(user.role)
 
-            val normalizedRole =
-                when (user.role.trim().uppercase()) {
-
-                    "ADMIN" -> "ADMIN"
-
-                    "MANAGER" -> "MANAGER"
-
-                    else -> "WORKER"
-                }
-
-            val userMap =
-                mapOf(
-                    "uid" to user.uid,
-                    "name" to user.name,
-                    "phone" to user.phone,
-                    "email" to user.email,
-                    "role" to normalizedRole,
-                    "active" to user.active,
-                    "workshopId" to user.workshopId,
-                    "createdAt" to user.createdAt,
-                    "lastLoginAt" to user.lastLoginAt
-                )
-
-            /*
-             * password غير موجود هنا عمداً.
-             */
-            db.collection("users")
-                .document(user.uid)
-                .set(
-                    userMap,
-                    SetOptions.merge()
-                )
-                .addOnSuccessListener {
-
-                    Log.d(
-                        TAG,
-                        "User synced: ${user.uid}"
-                    )
-                }
-                .addOnFailureListener { e ->
-
-                    if (
-                        e is FirebaseFirestoreException &&
-                        e.code ==
-                        FirebaseFirestoreException.Code.PERMISSION_DENIED
-                    ) {
-
-                        Log.w(
-                            TAG,
-                            "Sync user ${user.uid} denied: ${e.message}"
-                        )
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "Error syncing user: ${e.message}",
-                            e
-                        )
-                    }
-                }
-
-        } catch (e: Exception) {
-
-            Log.e(
-                TAG,
-                "Error syncUserToFirestore: ${e.message}",
-                e
+        val userMap =
+            mapOf(
+                "uid" to user.uid,
+                "name" to user.name,
+                "phone" to user.phone,
+                "email" to user.email,
+                "role" to normalizedRole,
+                "active" to user.active,
+                "workshopId" to user.workshopId,
+                "createdAt" to user.createdAt,
+                "lastLoginAt" to user.lastLoginAt
             )
-        }
+
+        db.collection("users")
+            .document(user.uid)
+            .set(
+                userMap,
+                SetOptions.merge()
+            )
+            .addOnSuccessListener {
+
+                Log.d(
+                    TAG,
+                    "Current user synced: ${user.uid}"
+                )
+            }
+            .addOnFailureListener { e ->
+
+                Log.e(
+                    TAG,
+                    "Error syncing current user ${user.uid}: ${e.message}",
+                    e
+                )
+            }
     }
 
     // ============================================================
-    // FETCH USER
+    // USER PROFILE SYNC - MANAGEMENT
     // ============================================================
 
     /**
-     * البحث عن مستخدم بواسطة:
+     * إنشاء/تحديث ملف مستخدم بواسطة المدير/الإدارة.
      *
-     * 1. رقم الهاتف
-     * 2. البريد الإلكتروني
+     * مهم جداً:
      *
-     * لا يتم قراءة password من Firestore.
+     * هذه الدالة لا تستخدم Firebase Authentication لإنشاء الحساب.
+     *
+     * إنشاء Firebase Auth يتم في ViewModel باستخدام
+     * FirebaseApp ثانوي عند إنشاء العامل بواسطة المدير.
+     *
+     * هذه الدالة تقوم فقط بإنشاء:
+     *
+     * users/{workerUid}
+     *
+     * وقواعد Firestore هي التي تمنع العامل العادي
+     * من استدعائها فعلياً.
+     *
+     * password غير موجود إطلاقاً.
+     */
+    fun syncUserProfileAsManagement(
+        user: TeamUser
+    ) {
+
+        val db = getDb() ?: return
+
+        val currentUid =
+            getCurrentUserUid()
+
+        if (currentUid.isBlank()) {
+
+            Log.w(
+                TAG,
+                "Cannot create user profile: manager is not authenticated."
+            )
+
+            return
+        }
+
+        if (user.uid.isBlank()) {
+
+            Log.w(
+                TAG,
+                "Cannot create user profile: target UID is empty."
+            )
+
+            return
+        }
+
+        /*
+         * لا يسمح باستخدام هذه الدالة لإنشاء ADMIN
+         * أو MANAGER من واجهة إنشاء العامل.
+         */
+        val normalizedRole =
+            normalizeRole(user.role)
+
+        if (
+            normalizedRole != "WORKER"
+        ) {
+
+            Log.w(
+                TAG,
+                "Management profile creation rejected for role=$normalizedRole"
+            )
+
+            return
+        }
+
+        val userMap =
+            mapOf(
+                "uid" to user.uid,
+                "name" to user.name,
+                "phone" to user.phone,
+                "email" to user.email,
+                "role" to "WORKER",
+                "active" to user.active,
+                "workshopId" to user.workshopId,
+                "createdAt" to user.createdAt,
+                "lastLoginAt" to user.lastLoginAt
+            )
+
+        db.collection("users")
+            .document(user.uid)
+            .set(
+                userMap,
+                SetOptions.merge()
+            )
+            .addOnSuccessListener {
+
+                Log.d(
+                    TAG,
+                    "Worker profile created by management: ${user.uid}"
+                )
+            }
+            .addOnFailureListener { e ->
+
+                if (
+                    e is FirebaseFirestoreException &&
+                    e.code ==
+                    FirebaseFirestoreException.Code.PERMISSION_DENIED
+                ) {
+
+                    Log.w(
+                        TAG,
+                        "Management cannot create worker profile: ${e.message}"
+                    )
+
+                } else {
+
+                    Log.e(
+                        TAG,
+                        "Error creating worker profile: ${e.message}",
+                        e
+                    )
+                }
+            }
+    }
+
+    // ============================================================
+    // FETCH CURRENT USER BY UID
+    // ============================================================
+
+    /**
+     * الطريقة المفضلة بعد تسجيل الدخول.
+     *
+     * بدلاً من البحث بواسطة email/phone،
+     * نقرأ:
+     *
+     * users/{FirebaseAuth.currentUser.uid}
+     *
+     * وهذا يتوافق مع Firestore Rules الآمنة.
+     */
+    fun fetchCurrentUserFromFirestore(
+        onResult: (TeamUser?) -> Unit
+    ) {
+
+        val db = getDb()
+
+        if (db == null) {
+
+            onResult(null)
+            return
+        }
+
+        val currentUid =
+            getCurrentUserUid()
+
+        if (currentUid.isBlank()) {
+
+            onResult(null)
+            return
+        }
+
+        db.collection("users")
+            .document(currentUid)
+            .get()
+            .addOnSuccessListener { doc ->
+
+                if (!doc.exists()) {
+
+                    Log.w(
+                        TAG,
+                        "No Firestore user profile for UID=$currentUid"
+                    )
+
+                    onResult(null)
+                    return@addOnSuccessListener
+                }
+
+                val storedUid =
+                    doc.getString("uid")
+                        ?: doc.id
+
+                if (storedUid != currentUid) {
+
+                    Log.w(
+                        TAG,
+                        "Firestore UID mismatch. " +
+                                "Auth=$currentUid Firestore=$storedUid"
+                    )
+
+                    onResult(null)
+                    return@addOnSuccessListener
+                }
+
+                onResult(
+                    createTeamUserFromDocument(
+                        doc,
+                        ""
+                    )
+                )
+            }
+            .addOnFailureListener { e ->
+
+                Log.e(
+                    TAG,
+                    "Error fetching current user from Firestore",
+                    e
+                )
+
+                onResult(null)
+            }
+    }
+
+    // ============================================================
+    // FETCH USER BY PHONE OR EMAIL
+    // ============================================================
+
+    /**
+     * البحث القديم بواسطة الهاتف أو البريد.
+     *
+     * هذه الدالة مفيدة للإدارة/البحث الداخلي.
+     *
+     * تسجيل الدخول نفسه يجب أن يستخدم
+     * fetchCurrentUserFromFirestore().
      */
     fun fetchUserFromFirestoreByPhoneOrEmail(
         query: String,
@@ -1178,7 +1364,6 @@ object FirestoreSync {
         if (db == null) {
 
             onResult(null)
-
             return
         }
 
@@ -1188,13 +1373,9 @@ object FirestoreSync {
         if (cleanQuery.isBlank()) {
 
             onResult(null)
-
             return
         }
 
-        /*
-         * البحث بواسطة الهاتف أولاً.
-         */
         db.collection("users")
             .whereEqualTo(
                 "phone",
@@ -1204,138 +1385,99 @@ object FirestoreSync {
             .addOnSuccessListener { snapshots ->
 
                 if (
-                    snapshots != null &&
-                    !snapshots.isEmpty
+                    snapshots.isNotEmpty()
                 ) {
 
-                    val doc =
-                        snapshots.documents.first()
-
-                    val user =
+                    onResult(
                         createTeamUserFromDocument(
-                            doc,
+                            snapshots.documents.first(),
                             cleanQuery
                         )
-
-                    onResult(user)
+                    )
 
                 } else {
 
-                    /*
-                     * إذا لم نجد الهاتف، نبحث بالبريد.
-                     */
-                    db.collection("users")
-                        .whereEqualTo(
-                            "email",
-                            cleanQuery
-                        )
-                        .get()
-                        .addOnSuccessListener { emailSnapshots ->
-
-                            if (
-                                emailSnapshots != null &&
-                                !emailSnapshots.isEmpty
-                            ) {
-
-                                val doc =
-                                    emailSnapshots.documents.first()
-
-                                val user =
-                                    createTeamUserFromDocument(
-                                        doc,
-                                        cleanQuery
-                                    )
-
-                                onResult(user)
-
-                            } else {
-
-                                onResult(null)
-                            }
-                        }
-                        .addOnFailureListener { e ->
-
-                            Log.e(
-                                TAG,
-                                "Error searching user by email",
-                                e
-                            )
-
-                            onResult(null)
-                        }
+                    searchUserByEmail(
+                        db,
+                        cleanQuery,
+                        onResult
+                    )
                 }
             }
             .addOnFailureListener { e ->
 
                 Log.e(
                     TAG,
-                    "Error searching user by phone",
+                    "Error searching user by phone: ${e.message}",
                     e
                 )
 
-                /*
-                 * محاولة البحث بالبريد حتى لو فشل استعلام الهاتف.
-                 */
-                db.collection("users")
-                    .whereEqualTo(
-                        "email",
-                        cleanQuery
-                    )
-                    .get()
-                    .addOnSuccessListener { emailSnapshots ->
-
-                        if (
-                            emailSnapshots != null &&
-                            !emailSnapshots.isEmpty
-                        ) {
-
-                            val doc =
-                                emailSnapshots.documents.first()
-
-                            onResult(
-                                createTeamUserFromDocument(
-                                    doc,
-                                    cleanQuery
-                                )
-                            )
-
-                        } else {
-
-                            onResult(null)
-                        }
-                    }
-                    .addOnFailureListener {
-
-                        onResult(null)
-                    }
+                searchUserByEmail(
+                    db,
+                    cleanQuery,
+                    onResult
+                )
             }
     }
 
-    /**
-     * تحويل Firestore Document إلى TeamUser.
-     *
-     * password دائماً فارغ.
-     */
+    private fun searchUserByEmail(
+        db: FirebaseFirestore,
+        cleanQuery: String,
+        onResult: (TeamUser?) -> Unit
+    ) {
+
+        db.collection("users")
+            .whereEqualTo(
+                "email",
+                cleanQuery
+            )
+            .get()
+            .addOnSuccessListener { snapshots ->
+
+                if (
+                    snapshots.isNotEmpty()
+                ) {
+
+                    onResult(
+                        createTeamUserFromDocument(
+                            snapshots.documents.first(),
+                            cleanQuery
+                        )
+                    )
+
+                } else {
+
+                    onResult(null)
+                }
+            }
+            .addOnFailureListener { e ->
+
+                Log.e(
+                    TAG,
+                    "Error searching user by email: ${e.message}",
+                    e
+                )
+
+                onResult(null)
+            }
+    }
+
+    // ============================================================
+    // CREATE TEAM USER
+    // ============================================================
+
     private fun createTeamUserFromDocument(
-        doc: com.google.firebase.firestore.DocumentSnapshot,
+        doc: DocumentSnapshot,
         fallbackQuery: String
     ): TeamUser {
 
         val role =
-            when (
-                doc.getString("role")
-                    ?.trim()
-                    ?.uppercase()
-            ) {
-
-                "ADMIN" -> "ADMIN"
-
-                "MANAGER" -> "MANAGER"
-
-                else -> "WORKER"
-            }
+            normalizeRole(
+                doc.getString("role") ?: "WORKER"
+            )
 
         return TeamUser(
+
             uid =
                 doc.getString("uid")
                     ?: doc.id,
@@ -1346,7 +1488,10 @@ object FirestoreSync {
 
             phone =
                 doc.getString("phone")
-                    ?: if (!fallbackQuery.contains("@")) {
+                    ?: if (
+                        fallbackQuery.isNotBlank() &&
+                        !fallbackQuery.contains("@")
+                    ) {
                         fallbackQuery
                     } else {
                         ""
@@ -1354,14 +1499,18 @@ object FirestoreSync {
 
             email =
                 doc.getString("email")
-                    ?: if (fallbackQuery.contains("@")) {
+                    ?: if (
+                        fallbackQuery.contains("@")
+                    ) {
                         fallbackQuery
                     } else {
                         ""
                     },
 
             /*
-             * لا يوجد Password في Firestore.
+             * مهم جداً:
+             *
+             * كلمة المرور لا تأتي من Firestore.
              */
             password = "",
 
@@ -1408,78 +1557,51 @@ object FirestoreSync {
             return
         }
 
-        try {
+        val cleanWorkshopId =
+            workshopId.trim()
 
-            val cleanWorkshopId =
-                workshopId.trim()
+        if (cleanWorkshopId.isBlank()) {
 
-            val settingsMap =
-                mutableMapOf<String, Any>(
-                    "storeName" to storeName,
-                    "storePhone" to storePhone,
-                    "storeWhatsapp" to storeWhatsapp,
-                    "managerName" to managerName,
-                    "updatedAt" to System.currentTimeMillis(),
-                    "updatedBy" to currentUid
-                )
-
-            if (cleanWorkshopId.isNotBlank()) {
-
-                settingsMap["workshopId"] =
-                    cleanWorkshopId
-            }
-
-            val docId =
-                if (cleanWorkshopId.isNotBlank()) {
-                    cleanWorkshopId
-                } else {
-                    "config"
-                }
-
-            db.collection("store_settings")
-                .document(docId)
-                .set(
-                    settingsMap,
-                    SetOptions.merge()
-                )
-                .addOnSuccessListener {
-
-                    Log.d(
-                        TAG,
-                        "Store settings successfully synced."
-                    )
-                }
-                .addOnFailureListener { e ->
-
-                    if (
-                        e is FirebaseFirestoreException &&
-                        e.code ==
-                        FirebaseFirestoreException.Code.PERMISSION_DENIED
-                    ) {
-
-                        Log.w(
-                            TAG,
-                            "Store settings sync denied: ${e.message}"
-                        )
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "Error syncing store settings: ${e.message}",
-                            e
-                        )
-                    }
-                }
-
-        } catch (e: Exception) {
-
-            Log.e(
+            Log.w(
                 TAG,
-                "Error syncStoreSettingsToFirestore: ${e.message}",
-                e
+                "Cannot sync store settings: workshopId is blank."
             )
+
+            return
         }
+
+        val settingsMap =
+            mapOf(
+                "storeName" to storeName,
+                "storePhone" to storePhone,
+                "storeWhatsapp" to storeWhatsapp,
+                "managerName" to managerName,
+                "workshopId" to cleanWorkshopId,
+                "updatedAt" to System.currentTimeMillis(),
+                "updatedBy" to currentUid
+            )
+
+        db.collection("store_settings")
+            .document(cleanWorkshopId)
+            .set(
+                settingsMap,
+                SetOptions.merge()
+            )
+            .addOnSuccessListener {
+
+                Log.d(
+                    TAG,
+                    "Store settings synced: $cleanWorkshopId"
+                )
+            }
+            .addOnFailureListener { e ->
+
+                Log.e(
+                    TAG,
+                    "Error syncing store settings: ${e.message}",
+                    e
+                )
+            }
     }
 
     // ============================================================
@@ -1506,99 +1628,71 @@ object FirestoreSync {
             return
         }
 
-        try {
+        /*
+         * workerId يجب أن يكون المستخدم الحالي
+         * إذا تم تمريره.
+         */
+        if (
+            log.workerId.isNotBlank() &&
+            log.workerId != currentUid
+        ) {
 
-            /*
-             * لا نسمح بتسجيل عملية باسم مستخدم آخر.
-             */
-            if (
-                log.workerId.isNotBlank() &&
-                log.workerId != currentUid
-            ) {
-
-                Log.w(
-                    TAG,
-                    "Audit log workerId does not match current Firebase user."
-                )
-
-                return
-            }
-
-            val cleanWorkshopId =
-                workshopId.trim()
-
-            val logMap =
-                mutableMapOf<String, Any>(
-                    "workerId" to currentUid,
-                    "workerName" to log.workerName,
-                    "action" to log.action,
-                    "projectId" to log.projectId,
-                    "projectName" to log.projectName,
-                    "timestamp" to log.timestamp
-                )
-
-            if (cleanWorkshopId.isNotBlank()) {
-
-                logMap["workshopId"] =
-                    cleanWorkshopId
-            }
-
-            logMap["updatedBy"] =
-                currentUid
-
-            db.collection("audit_logs")
-                .add(logMap)
-                .addOnSuccessListener {
-
-                    Log.d(
-                        TAG,
-                        "Audit log synced."
-                    )
-                }
-                .addOnFailureListener { e ->
-
-                    if (
-                        e is FirebaseFirestoreException &&
-                        e.code ==
-                        FirebaseFirestoreException.Code.PERMISSION_DENIED
-                    ) {
-
-                        Log.w(
-                            TAG,
-                            "Sync audit log denied: ${e.message}"
-                        )
-
-                    } else {
-
-                        Log.e(
-                            TAG,
-                            "Error syncing audit log: ${e.message}",
-                            e
-                        )
-                    }
-                }
-
-        } catch (e: Exception) {
-
-            Log.e(
+            Log.w(
                 TAG,
-                "Error syncAuditLogToFirestore: ${e.message}",
-                e
+                "Audit log workerId mismatch."
             )
+
+            return
         }
+
+        val cleanWorkshopId =
+            workshopId.trim()
+
+        if (cleanWorkshopId.isBlank()) {
+
+            Log.w(
+                TAG,
+                "Audit log workshopId is blank."
+            )
+
+            return
+        }
+
+        val logMap =
+            mapOf(
+                "workerId" to currentUid,
+                "workerName" to log.workerName,
+                "action" to log.action,
+                "projectId" to log.projectId,
+                "projectName" to log.projectName,
+                "timestamp" to log.timestamp,
+                "workshopId" to cleanWorkshopId,
+                "updatedBy" to currentUid
+            )
+
+        db.collection("audit_logs")
+            .add(logMap)
+            .addOnSuccessListener {
+
+                Log.d(
+                    TAG,
+                    "Audit log synced."
+                )
+            }
+            .addOnFailureListener { e ->
+
+                Log.e(
+                    TAG,
+                    "Error syncing audit log: ${e.message}",
+                    e
+                )
+            }
     }
 
     // ============================================================
-    // WORKSHOP JOIN REQUEST
+    // SEND WORKER JOIN REQUEST
     // ============================================================
 
-    /**
-     * إرسال طلب انضمام العامل إلى ورشة عبر Sync Code.
-     *
-     * لا يتم تغيير users/{uid}/workshopId هنا.
-     *
-     * التغيير يحدث فقط بعد موافقة المدير.
-     */
     fun sendWorkerJoinRequest(
         user: TeamUser,
         syncCode: String,
@@ -1649,7 +1743,7 @@ object FirestoreSync {
 
             onResult(
                 false,
-                "رمز المزامنة فارغ"
+                "رمز المزامنة فارغ."
             )
 
             return
@@ -1664,32 +1758,20 @@ object FirestoreSync {
             .addOnSuccessListener { snapshots ->
 
                 val workshopDoc =
-                    snapshots
-                        ?.documents
-                        ?.firstOrNull()
+                    snapshots.documents.firstOrNull()
 
-                if (
-                    workshopDoc != null &&
-                    workshopDoc.exists()
-                ) {
-
-                    val targetWorkshopId =
-                        workshopDoc.id
+                if (workshopDoc != null) {
 
                     createJoinRequestInFirestore(
                         db,
                         user,
-                        targetWorkshopId,
+                        workshopDoc.id,
                         cleanCode,
                         onResult
                     )
 
                 } else {
 
-                    /*
-                     * دعم الحالة التي يكون فيها Sync Code
-                     * هو نفسه document ID.
-                     */
                     db.collection("workshops")
                         .document(cleanCode)
                         .get()
@@ -1709,7 +1791,7 @@ object FirestoreSync {
 
                                 onResult(
                                     false,
-                                    "رمز المزامنة غير صحيح، الورشة غير موجودة"
+                                    "رمز المزامنة غير صحيح، الورشة غير موجودة."
                                 )
                             }
                         }
@@ -1717,7 +1799,7 @@ object FirestoreSync {
 
                             onResult(
                                 false,
-                                "رمز المزامنة غير صحيح، الورشة غير موجودة"
+                                "رمز المزامنة غير صحيح، الورشة غير موجودة."
                             )
                         }
                 }
@@ -1768,11 +1850,10 @@ object FirestoreSync {
 
                 if (doc.exists()) {
 
-                    val status =
+                    when (
                         doc.getString("status")
                             ?: ""
-
-                    when (status) {
+                    ) {
 
                         "pending" -> {
 
@@ -1796,6 +1877,9 @@ object FirestoreSync {
                     }
                 }
 
+                val now =
+                    System.currentTimeMillis()
+
                 val requestData =
                     hashMapOf(
                         "requestId" to requestId,
@@ -1807,8 +1891,8 @@ object FirestoreSync {
                         "workshopId" to targetWorkshopId,
                         "syncCode" to cleanCode,
                         "status" to "pending",
-                        "createdAt" to System.currentTimeMillis(),
-                        "updatedAt" to System.currentTimeMillis()
+                        "createdAt" to now,
+                        "updatedAt" to now
                     )
 
                 requestRef
@@ -1891,18 +1975,16 @@ object FirestoreSync {
                 val list =
                     snapshots.documents.mapNotNull { doc ->
 
-                        doc.data?.toMutableMap()?.apply {
+                        doc.data
+                            ?.toMutableMap()
+                            ?.apply {
 
-                            /*
-                             * ضمان وجود requestId حتى لو
-                             * لم يكن محفوظاً في البيانات القديمة.
-                             */
-                            if (!containsKey("requestId")) {
+                                if (!containsKey("requestId")) {
 
-                                this["requestId"] =
-                                    doc.id
+                                    this["requestId"] =
+                                        doc.id
+                                }
                             }
-                        }
                     }
 
                 onRequestsUpdated(list)
@@ -1913,20 +1995,6 @@ object FirestoreSync {
     // APPROVE JOIN REQUEST
     // ============================================================
 
-    /**
-     * موافقة المدير على طلب الانضمام.
-     *
-     * العمليات:
-     *
-     * joinRequests/{requestId}
-     *        status = approved
-     *
-     * workshops/{workshopId}/members/{workerUid}
-     *        role = worker
-     *
-     * users/{workerUid}
-     *        workshopId = workshopId
-     */
     fun approveJoinRequest(
         requestId: String,
         workerUid: String,
@@ -1982,10 +2050,6 @@ object FirestoreSync {
             return
         }
 
-        /*
-         * نقرأ الطلب أولاً حتى نتأكد من أنه
-         * يخص الورشة المطلوبة والعامل المطلوب.
-         */
         val requestRef =
             db.collection("joinRequests")
                 .document(cleanRequestId)
@@ -2012,6 +2076,10 @@ object FirestoreSync {
                     requestDoc.getString("workerUid")
                         ?: ""
 
+                val requestStatus =
+                    requestDoc.getString("status")
+                        ?: ""
+
                 if (
                     requestWorkshopId != cleanWorkshopId ||
                     requestWorkerUid != cleanWorkerUid
@@ -2025,17 +2093,40 @@ object FirestoreSync {
                     return@addOnSuccessListener
                 }
 
+                if (
+                    requestStatus != "pending"
+                ) {
+
+                    onResult(
+                        false,
+                        "طلب الانضمام تمت معالجته مسبقاً."
+                    )
+
+                    return@addOnSuccessListener
+                }
+
+                val now =
+                    System.currentTimeMillis()
+
                 val batch =
                     db.batch()
+
+                // ------------------------------------------------
+                // JOIN REQUEST
+                // ------------------------------------------------
 
                 batch.update(
                     requestRef,
                     mapOf(
                         "status" to "approved",
-                        "updatedAt" to System.currentTimeMillis(),
+                        "updatedAt" to now,
                         "approvedBy" to currentUid
                     )
                 )
+
+                // ------------------------------------------------
+                // WORKSHOP MEMBER
+                // ------------------------------------------------
 
                 val memberRef =
                     db.collection("workshops")
@@ -2048,11 +2139,16 @@ object FirestoreSync {
                     mapOf(
                         "uid" to cleanWorkerUid,
                         "role" to "worker",
-                        "joinedAt" to System.currentTimeMillis(),
+                        "active" to true,
+                        "joinedAt" to now,
                         "approvedBy" to currentUid
                     ),
                     SetOptions.merge()
                 )
+
+                // ------------------------------------------------
+                // USER PROFILE
+                // ------------------------------------------------
 
                 val userRef =
                     db.collection("users")
@@ -2062,7 +2158,8 @@ object FirestoreSync {
                     userRef,
                     mapOf(
                         "workshopId" to cleanWorkshopId,
-                        "updatedAt" to System.currentTimeMillis()
+                        "active" to true,
+                        "updatedAt" to now
                     )
                 )
 
@@ -2112,7 +2209,10 @@ object FirestoreSync {
             return
         }
 
-        if (!isFirebaseAuthenticated()) {
+        val currentUid =
+            getCurrentUserUid()
+
+        if (currentUid.isBlank()) {
 
             onResult(
                 false,
@@ -2141,14 +2241,14 @@ object FirestoreSync {
                 mapOf(
                     "status" to "rejected",
                     "updatedAt" to System.currentTimeMillis(),
-                    "rejectedBy" to getCurrentUserUid()
+                    "rejectedBy" to currentUid
                 )
             )
             .addOnSuccessListener {
 
                 onResult(
                     true,
-                    "تم رفض طلب الانضمام"
+                    "تم رفض طلب الانضمام."
                 )
             }
             .addOnFailureListener { e ->
