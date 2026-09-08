@@ -1,4 +1,3 @@
-```kotlin
 package com.example.data.sync
 
 import android.content.Context
@@ -2545,4 +2544,3 @@ object FirestoreSync {
             }
     }
 }
-```
