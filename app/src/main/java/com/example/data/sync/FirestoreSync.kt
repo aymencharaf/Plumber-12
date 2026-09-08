@@ -1,3 +1,4 @@
+```kotlin
 package com.example.data.sync
 
 import android.content.Context
@@ -10,6 +11,7 @@ import com.example.data.model.ProjectItem
 import com.example.data.model.TeamUser
 
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -18,6 +20,8 @@ import com.google.firebase.firestore.SetOptions
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 object FirestoreSync {
@@ -26,6 +30,13 @@ object FirestoreSync {
 
     private var projectsListenerRegistration: ListenerRegistration? = null
     private var projectItemsListenerRegistration: ListenerRegistration? = null
+
+    /*
+     * Scope خاص بالمزامنة.
+     * يتم إلغاؤه عند إيقاف الـ realtime listeners لمنع
+     * استمرار عمليات Room بعد تسجيل الخروج أو تبديل الحساب.
+     */
+    private var realtimeSyncJob: Job? = null
 
     // ============================================================
     // FIREBASE
@@ -54,8 +65,7 @@ object FirestoreSync {
 
     fun isFirebaseAuthenticated(): Boolean {
         return try {
-            FirebaseAuth.getInstance()
-                .currentUser != null
+            FirebaseAuth.getInstance().currentUser != null
         } catch (e: Exception) {
             false
         }
@@ -148,6 +158,40 @@ object FirestoreSync {
                 FirebaseFirestoreException.Code.PERMISSION_DENIED
     }
 
+    /*
+     * Firestore يمكن أن يعيد بعض الأرقام كـ Long وبعضها كـ Double.
+     * هذه الدالة تجعل القراءة أكثر تحملاً للنوعين.
+     */
+    private fun getDoubleValue(
+        doc: DocumentSnapshot,
+        field: String,
+        default: Double = 0.0
+    ): Double {
+        return when (val value = doc.get(field)) {
+            is Double -> value
+            is Long -> value.toDouble()
+            is Int -> value.toDouble()
+            is Float -> value.toDouble()
+            is Number -> value.toDouble()
+            else -> default
+        }
+    }
+
+    private fun getLongValue(
+        doc: DocumentSnapshot,
+        field: String,
+        default: Long = 0L
+    ): Long {
+        return when (val value = doc.get(field)) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Double -> value.toLong()
+            is Float -> value.toLong()
+            is Number -> value.toLong()
+            else -> default
+        }
+    }
+
     // ============================================================
     // REALTIME SYNC
     // ============================================================
@@ -169,7 +213,10 @@ object FirestoreSync {
         val cleanWorkshopId = workshopId.trim()
 
         if (cleanWorkshopId.isBlank()) {
-            Log.w(TAG, "workshopId is empty. Realtime sync skipped.")
+            Log.w(
+                TAG,
+                "workshopId is empty. Realtime sync skipped."
+            )
             return
         }
 
@@ -186,30 +233,58 @@ object FirestoreSync {
             return
         }
 
+        /*
+         * أوقف أي listeners قديمة قبل إنشاء listeners جديدة.
+         */
         stopRealtimeListener()
 
         val plumberDb = PlumberDatabase.getDatabase(context)
-        val scope = CoroutineScope(Dispatchers.IO)
+
+        realtimeSyncJob =
+            SupervisorJob()
+
+        val scope =
+            CoroutineScope(
+                Dispatchers.IO +
+                        realtimeSyncJob!!
+            )
 
         Log.d(
             TAG,
-            "Starting realtime sync: role=$normalizedRole uid=$targetUid workshop=$cleanWorkshopId"
+            "Starting realtime sync: role=$normalizedRole " +
+                    "uid=$targetUid workshop=$cleanWorkshopId"
         )
 
         // ========================================================
-        // PROJECTS LISTENER
+        // PROJECTS QUERY
         // ========================================================
 
         val projectsQuery =
             when {
+
+                /*
+                 * ADMIN / MANAGER:
+                 * يرى جميع مشاريع ورشته.
+                 */
                 isManagement -> {
                     db.collection("projects")
-                        .whereEqualTo("workshopId", cleanWorkshopId)
+                        .whereEqualTo(
+                            "workshopId",
+                            cleanWorkshopId
+                        )
                 }
 
+                /*
+                 * WORKER:
+                 * يرى فقط المشاريع التي UID الخاص به موجود
+                 * داخل assignedWorkers.
+                 */
                 normalizedRole == "WORKER" -> {
                     db.collection("projects")
-                        .whereEqualTo("workshopId", cleanWorkshopId)
+                        .whereEqualTo(
+                            "workshopId",
+                            cleanWorkshopId
+                        )
                         .whereArrayContains(
                             "assignedWorkers",
                             targetUid
@@ -217,10 +292,17 @@ object FirestoreSync {
                 }
 
                 else -> {
-                    Log.w(TAG, "Unknown role: $normalizedRole")
+                    Log.w(
+                        TAG,
+                        "Unknown role: $normalizedRole"
+                    )
                     return
                 }
             }
+
+        // ========================================================
+        // PROJECTS LISTENER
+        // ========================================================
 
         projectsListenerRegistration =
             projectsQuery.addSnapshotListener { snapshot, error ->
@@ -243,114 +325,184 @@ object FirestoreSync {
                     return@addSnapshotListener
                 }
 
-                if (snapshot == null) return@addSnapshotListener
+                if (snapshot == null) {
+                    return@addSnapshotListener
+                }
 
                 scope.launch {
 
-                    snapshot.documents.forEach { doc ->
+                    /*
+                     * نستخدم documentChanges بدل documents حتى نستطيع
+                     * معالجة ADDED / MODIFIED / REMOVED.
+                     */
+                    snapshot.documentChanges.forEach { change ->
+
+                        val doc = change.document
 
                         try {
 
                             val id =
-                                doc.getLong("id")
-                                    ?: doc.id.toLongOrNull()
-                                    ?: 0L
+                                getLongValue(
+                                    doc,
+                                    "id",
+                                    doc.id.toLongOrNull() ?: 0L
+                                )
 
-                            if (id <= 0L) return@forEach
-
-                            val projectWorkshopId =
-                                doc.getString("workshopId")
-                                    ?: cleanWorkshopId
-
-                            if (projectWorkshopId != cleanWorkshopId) {
+                            if (id <= 0L) {
+                                Log.w(
+                                    TAG,
+                                    "Ignoring project with invalid ID: ${doc.id}"
+                                )
                                 return@forEach
                             }
 
-                            val project = Project(
-                                id = id,
+                            val projectWorkshopId =
+                                doc.getString("workshopId")
+                                    ?.trim()
+                                    ?: cleanWorkshopId
 
-                                title =
-                                    doc.getString("name")
-                                        ?: doc.getString("title")
-                                        ?: "مشروع جديد",
+                            /*
+                             * حماية إضافية محلية:
+                             * لا ندخل بيانات ورشة أخرى إلى Room.
+                             */
+                            if (
+                                projectWorkshopId !=
+                                cleanWorkshopId
+                            ) {
+                                return@forEach
+                            }
 
-                                clientName =
-                                    doc.getString("clientName")
-                                        ?: "",
+                            when (change.type) {
 
-                                location =
-                                    doc.getString("location")
-                                        ?: doc.getString("address")
-                                        ?: "",
+                                DocumentChange.Type.ADDED,
+                                DocumentChange.Type.MODIFIED -> {
 
-                                notes =
-                                    doc.getString("notes")
-                                        ?: "",
+                                    val project =
+                                        Project(
 
-                                workTypeKey =
-                                    doc.getString("workTypeKey")
-                                        ?: "CUSTOM",
+                                            id = id,
 
-                                workTypeNameAr =
-                                    doc.getString("workTypeNameAr")
-                                        ?: "عمل مخصص",
+                                            title =
+                                                doc.getString("name")
+                                                    ?: doc.getString("title")
+                                                    ?: "مشروع جديد",
 
-                                workerName =
-                                    doc.getString("workerName")
-                                        ?: "",
+                                            clientName =
+                                                doc.getString("clientName")
+                                                    ?: "",
 
-                                managerName =
-                                    doc.getString("managerName")
-                                        ?: "",
+                                            location =
+                                                doc.getString("location")
+                                                    ?: doc.getString("address")
+                                                    ?: "",
 
-                                storePhone =
-                                    doc.getString("storePhone")
-                                        ?: "",
+                                            notes =
+                                                doc.getString("notes")
+                                                    ?: "",
 
-                                orderStatus =
-                                    doc.getString("orderStatus")
-                                        ?: "NEW",
+                                            workTypeKey =
+                                                doc.getString("workTypeKey")
+                                                    ?: "CUSTOM",
 
-                                assignedWorkers =
-                                    readAssignedWorkers(doc),
+                                            workTypeNameAr =
+                                                doc.getString("workTypeNameAr")
+                                                    ?: "عمل مخصص",
 
-                                createdBy =
-                                    doc.getString("createdBy")
-                                        ?: "",
+                                            workerName =
+                                                doc.getString("workerName")
+                                                    ?: "",
 
-                                status =
-                                    doc.getString("status")
-                                        ?: "NEW",
+                                            managerName =
+                                                doc.getString("managerName")
+                                                    ?: "",
 
-                                laborCost =
-                                    doc.getDouble("laborCost")
-                                        ?: 0.0,
+                                            storePhone =
+                                                doc.getString("storePhone")
+                                                    ?: "",
 
-                                paidAmount =
-                                    doc.getDouble("paidAmount")
-                                        ?: 0.0,
+                                            orderStatus =
+                                                doc.getString("orderStatus")
+                                                    ?: "NEW",
 
-                                workshopId =
-                                    projectWorkshopId,
+                                            assignedWorkers =
+                                                readAssignedWorkers(doc),
 
-                                createdAt =
-                                    doc.getLong("createdAt")
-                                        ?: System.currentTimeMillis(),
+                                            createdBy =
+                                                doc.getString("createdBy")
+                                                    ?: "",
 
-                                updatedAt =
-                                    doc.getLong("updatedAt")
-                                        ?: System.currentTimeMillis()
-                            )
+                                            status =
+                                                doc.getString("status")
+                                                    ?: "NEW",
 
-                            plumberDb
-                                .projectDao()
-                                .insertProject(project)
+                                            laborCost =
+                                                getDoubleValue(
+                                                    doc,
+                                                    "laborCost",
+                                                    0.0
+                                                ),
+
+                                            paidAmount =
+                                                getDoubleValue(
+                                                    doc,
+                                                    "paidAmount",
+                                                    0.0
+                                                ),
+
+                                            workshopId =
+                                                projectWorkshopId,
+
+                                            createdAt =
+                                                getLongValue(
+                                                    doc,
+                                                    "createdAt",
+                                                    System.currentTimeMillis()
+                                                ),
+
+                                            updatedAt =
+                                                getLongValue(
+                                                    doc,
+                                                    "updatedAt",
+                                                    System.currentTimeMillis()
+                                                )
+                                        )
+
+                                    plumberDb
+                                        .projectDao()
+                                        .insertProject(project)
+
+                                    Log.d(
+                                        TAG,
+                                        "Project ${change.type}: $id"
+                                    )
+                                }
+
+                                DocumentChange.Type.REMOVED -> {
+
+                                    /*
+                                     * نحذف العناصر أولاً ثم المشروع.
+                                     * هذا متوافق مع ProjectItemDao الفعلي.
+                                     */
+                                    plumberDb
+                                        .projectItemDao()
+                                        .deleteAllItemsForProject(id)
+
+                                    plumberDb
+                                        .projectDao()
+                                        .deleteProjectById(id)
+
+                                    Log.d(
+                                        TAG,
+                                        "Project removed locally: $id"
+                                    )
+                                }
+                            }
 
                         } catch (e: Exception) {
 
                             Log.e(
                                 TAG,
-                                "Project parsing error: ${doc.id}",
+                                "Project processing error: ${doc.id}",
                                 e
                             )
                         }
@@ -359,7 +511,7 @@ object FirestoreSync {
             }
 
         // ========================================================
-        // PROJECT ITEMS LISTENER
+        // PROJECT ITEMS QUERY
         // ========================================================
 
         val projectItemsQuery =
@@ -373,6 +525,10 @@ object FirestoreSync {
 
             } else {
 
+                /*
+                 * العامل يستقبل فقط عناصر المشاريع المرتبطة
+                 * بـ workerId الخاص به.
+                 */
                 db.collection("project_items")
                     .whereEqualTo(
                         "workshopId",
@@ -383,6 +539,10 @@ object FirestoreSync {
                         targetUid
                     )
             }
+
+        // ========================================================
+        // PROJECT ITEMS LISTENER
+        // ========================================================
 
         projectItemsListenerRegistration =
             projectItemsQuery.addSnapshotListener { snapshot, error ->
@@ -405,105 +565,173 @@ object FirestoreSync {
                     return@addSnapshotListener
                 }
 
-                if (snapshot == null) return@addSnapshotListener
+                if (snapshot == null) {
+                    return@addSnapshotListener
+                }
 
                 scope.launch {
 
-                    snapshot.documents.forEach { doc ->
+                    snapshot.documentChanges.forEach { change ->
+
+                        val doc = change.document
 
                         try {
 
                             val id =
-                                doc.getLong("id")
-                                    ?: doc.id.toLongOrNull()
-                                    ?: 0L
+                                getLongValue(
+                                    doc,
+                                    "id",
+                                    doc.id.toLongOrNull() ?: 0L
+                                )
 
                             val projectId =
-                                doc.getLong("projectId")
-                                    ?: 0L
+                                getLongValue(
+                                    doc,
+                                    "projectId",
+                                    0L
+                                )
 
-                            if (id <= 0L || projectId <= 0L) {
+                            if (
+                                id <= 0L ||
+                                projectId <= 0L
+                            ) {
+                                Log.w(
+                                    TAG,
+                                    "Ignoring invalid project item: ${doc.id}"
+                                )
                                 return@forEach
                             }
 
-                            val item = ProjectItem(
+                            val itemWorkshopId =
+                                doc.getString("workshopId")
+                                    ?.trim()
+                                    ?: cleanWorkshopId
 
-                                id = id,
+                            if (
+                                itemWorkshopId !=
+                                cleanWorkshopId
+                            ) {
+                                return@forEach
+                            }
 
-                                projectId = projectId,
+                            when (change.type) {
 
-                                materialKey =
-                                    doc.getString("materialKey")
-                                        ?: doc.getString("materialId")
-                                        ?: "custom",
+                                DocumentChange.Type.ADDED,
+                                DocumentChange.Type.MODIFIED -> {
 
-                                materialNameAr =
-                                    doc.getString("materialNameAr")
-                                        ?: doc.getString("materialName")
-                                        ?: "مادة",
+                                    val item =
+                                        ProjectItem(
 
-                                materialNameFr =
-                                    doc.getString("materialNameFr")
-                                        ?: "",
+                                            id = id,
 
-                                category =
-                                    doc.getString("category")
-                                        ?: "CUSTOM",
+                                            projectId = projectId,
 
-                                size =
-                                    doc.getString("size")
-                                        ?: "",
+                                            materialKey =
+                                                doc.getString("materialKey")
+                                                    ?: doc.getString("materialId")
+                                                    ?: "custom",
 
-                                quantity =
-                                    doc.getDouble("quantity")
-                                        ?: 1.0,
+                                            materialNameAr =
+                                                doc.getString("materialNameAr")
+                                                    ?: doc.getString("materialName")
+                                                    ?: "مادة",
 
-                                unit =
-                                    doc.getString("unit")
-                                        ?: "قطعة",
+                                            materialNameFr =
+                                                doc.getString("materialNameFr")
+                                                    ?: "",
 
-                                unitPrice =
-                                    doc.getDouble("unitPrice")
-                                        ?: 0.0,
+                                            category =
+                                                doc.getString("category")
+                                                    ?: "CUSTOM",
 
-                                standardPipeLengthMeters =
-                                    doc.getDouble(
-                                        "standardPipeLengthMeters"
-                                    ) ?: 4.0,
+                                            size =
+                                                doc.getString("size")
+                                                    ?: "",
 
-                                isPurchased =
-                                    doc.getBoolean("isPurchased")
-                                        ?: false,
+                                            quantity =
+                                                getDoubleValue(
+                                                    doc,
+                                                    "quantity",
+                                                    1.0
+                                                ),
 
-                                notes =
-                                    doc.getString("notes")
-                                        ?: "",
+                                            unit =
+                                                doc.getString("unit")
+                                                    ?: "قطعة",
 
-                                iconType =
-                                    doc.getString("iconType")
-                                        ?: "elbow",
+                                            unitPrice =
+                                                getDoubleValue(
+                                                    doc,
+                                                    "unitPrice",
+                                                    0.0
+                                                ),
 
-                                imageUri =
-                                    doc.getString("imageUri"),
+                                            standardPipeLengthMeters =
+                                                getDoubleValue(
+                                                    doc,
+                                                    "standardPipeLengthMeters",
+                                                    4.0
+                                                ),
 
-                                workshopId =
-                                    doc.getString("workshopId")
-                                        ?: cleanWorkshopId,
+                                            isPurchased =
+                                                doc.getBoolean(
+                                                    "isPurchased"
+                                                ) ?: false,
 
-                                createdAt =
-                                    doc.getLong("createdAt")
-                                        ?: System.currentTimeMillis()
-                            )
+                                            notes =
+                                                doc.getString("notes")
+                                                    ?: "",
 
-                            plumberDb
-                                .projectItemDao()
-                                .insertItem(item)
+                                            iconType =
+                                                doc.getString("iconType")
+                                                    ?: "elbow",
+
+                                            imageUri =
+                                                doc.getString("imageUri"),
+
+                                            workshopId =
+                                                itemWorkshopId,
+
+                                            createdAt =
+                                                getLongValue(
+                                                    doc,
+                                                    "createdAt",
+                                                    System.currentTimeMillis()
+                                                )
+                                        )
+
+                                    plumberDb
+                                        .projectItemDao()
+                                        .insertItem(item)
+
+                                    Log.d(
+                                        TAG,
+                                        "Project item ${change.type}: $id"
+                                    )
+                                }
+
+                                DocumentChange.Type.REMOVED -> {
+
+                                    /*
+                                     * ProjectItemDao يحتوي فعلياً على
+                                     * deleteItemById(Long).
+                                     */
+                                    plumberDb
+                                        .projectItemDao()
+                                        .deleteItemById(id)
+
+                                    Log.d(
+                                        TAG,
+                                        "Project item removed locally: $id"
+                                    )
+                                }
+                            }
 
                         } catch (e: Exception) {
 
                             Log.e(
                                 TAG,
-                                "Project item parsing error: ${doc.id}",
+                                "Project item processing error: ${doc.id}",
                                 e
                             )
                         }
@@ -511,6 +739,10 @@ object FirestoreSync {
                 }
             }
     }
+
+    // ============================================================
+    // STOP REALTIME LISTENERS
+    // ============================================================
 
     fun stopRealtimeListener() {
 
@@ -520,7 +752,13 @@ object FirestoreSync {
         projectItemsListenerRegistration?.remove()
         projectItemsListenerRegistration = null
 
-        Log.d(TAG, "Realtime listeners stopped.")
+        realtimeSyncJob?.cancel()
+        realtimeSyncJob = null
+
+        Log.d(
+            TAG,
+            "Realtime listeners stopped."
+        )
     }
 
     // ============================================================
@@ -534,7 +772,8 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val currentUid = getCurrentUserUid()
+        val currentUid =
+            getCurrentUserUid()
 
         if (currentUid.isBlank()) {
             Log.w(
@@ -563,52 +802,51 @@ object FirestoreSync {
                 project.assignedWorkers
             )
 
-        val projectMap = mapOf(
+        val projectMap =
+            mapOf(
 
-            "id" to project.id,
+                "id" to project.id,
 
-            "name" to project.title,
+                "name" to project.title,
+                "title" to project.title,
 
-            "title" to project.title,
+                "clientName" to project.clientName,
 
-            "clientName" to project.clientName,
+                "location" to project.location,
+                "address" to project.location,
 
-            "location" to project.location,
+                "notes" to project.notes,
 
-            "address" to project.location,
+                "workTypeKey" to project.workTypeKey,
+                "workTypeNameAr" to project.workTypeNameAr,
 
-            "notes" to project.notes,
+                "workerName" to project.workerName,
+                "managerName" to project.managerName,
 
-            "workTypeKey" to project.workTypeKey,
+                "storePhone" to project.storePhone,
 
-            "workTypeNameAr" to project.workTypeNameAr,
+                "orderStatus" to project.orderStatus,
 
-            "workerName" to project.workerName,
+                /*
+                 * Firestore Array.
+                 * وهذا ضروري لـ whereArrayContains.
+                 */
+                "assignedWorkers" to assignedWorkers,
 
-            "managerName" to project.managerName,
+                "createdBy" to project.createdBy,
 
-            "storePhone" to project.storePhone,
+                "status" to project.status,
 
-            "orderStatus" to project.orderStatus,
+                "laborCost" to project.laborCost,
+                "paidAmount" to project.paidAmount,
 
-            "assignedWorkers" to assignedWorkers,
+                "workshopId" to currentWorkshop,
 
-            "createdBy" to project.createdBy,
+                "createdAt" to project.createdAt,
+                "updatedAt" to project.updatedAt,
 
-            "status" to project.status,
-
-            "laborCost" to project.laborCost,
-
-            "paidAmount" to project.paidAmount,
-
-            "workshopId" to currentWorkshop,
-
-            "createdAt" to project.createdAt,
-
-            "updatedAt" to project.updatedAt,
-
-            "updatedBy" to currentUid
-        )
+                "updatedBy" to currentUid
+            )
 
         db.collection("projects")
             .document(project.id.toString())
@@ -656,7 +894,8 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val currentUid = getCurrentUserUid()
+        val currentUid =
+            getCurrentUserUid()
 
         if (currentUid.isBlank()) {
 
@@ -670,11 +909,8 @@ object FirestoreSync {
 
         val currentWorkshop =
             if (item.workshopId.isNotBlank()) {
-
                 item.workshopId.trim()
-
             } else {
-
                 workshopId.trim()
             }
 
@@ -688,68 +924,78 @@ object FirestoreSync {
             return
         }
 
+        /*
+         * مهم:
+         *
+         * لا نضع currentUid تلقائياً كـ workerId.
+         *
+         * إذا كان المدير يعدّل عنصراً لمشروع غير مسند إلى عامل،
+         * يبقى workerId فارغاً.
+         *
+         * الـ ViewModel يمكنه تمرير UID العامل الحقيقي عندما يكون
+         * المشروع مسنداً إلى عامل.
+         */
         val ownerWorkerId =
-            workerId.trim().ifBlank {
-                currentUid
-            }
+            workerId.trim()
 
-        val itemMap = mapOf(
+        val itemMap =
+            mapOf(
 
-            "id" to item.id,
+                "id" to item.id,
 
-            "projectId" to item.projectId,
+                "projectId" to item.projectId,
 
-            "materialId" to item.materialKey,
+                "materialId" to item.materialKey,
+                "materialKey" to item.materialKey,
 
-            "materialKey" to item.materialKey,
+                "materialName" to item.materialNameAr,
+                "materialNameAr" to item.materialNameAr,
+                "materialNameFr" to item.materialNameFr,
 
-            "materialName" to item.materialNameAr,
+                "category" to item.category,
 
-            "materialNameAr" to item.materialNameAr,
+                "size" to item.size,
 
-            "materialNameFr" to item.materialNameFr,
+                "quantity" to item.quantity,
 
-            "category" to item.category,
+                "unit" to item.unit,
 
-            "size" to item.size,
+                "unitPrice" to item.unitPrice,
 
-            "quantity" to item.quantity,
+                "standardPipeLengthMeters" to
+                        item.standardPipeLengthMeters,
 
-            "unit" to item.unit,
+                "isPurchased" to item.isPurchased,
 
-            "unitPrice" to item.unitPrice,
+                "notes" to item.notes,
 
-            "standardPipeLengthMeters" to
-                    item.standardPipeLengthMeters,
+                "iconType" to item.iconType,
 
-            "isPurchased" to item.isPurchased,
+                "imageUri" to item.imageUri,
 
-            "notes" to item.notes,
+                "workerId" to ownerWorkerId,
 
-            "iconType" to item.iconType,
+                "workerName" to workerName,
 
-            "imageUri" to item.imageUri,
+                "workshopId" to currentWorkshop,
 
-            "workerId" to ownerWorkerId,
+                "createdAt" to item.createdAt,
 
-            "workerName" to workerName,
+                "updatedAt" to System.currentTimeMillis(),
 
-            "workshopId" to currentWorkshop,
+                "updatedBy" to currentUid
+            )
 
-            "createdAt" to item.createdAt,
-
-            "updatedAt" to System.currentTimeMillis(),
-
-            "updatedBy" to currentUid
-        )
-
+        /*
+         * العناصر التي تأتي من Room بعد الإدخال لها ID > 0.
+         *
+         * fallback يستخدم فقط إذا كان العنصر لم يحصل بعد
+         * على Room ID.
+         */
         val docId =
             if (item.id > 0L) {
-
                 item.id.toString()
-
             } else {
-
                 "${item.projectId}_${item.materialKey}_${item.size}"
             }
 
@@ -850,9 +1096,17 @@ object FirestoreSync {
 
             Log.w(
                 TAG,
-                "Cannot delete project item."
+                "Cannot delete project item: unauthenticated."
             )
 
+            return
+        }
+
+        if (itemId <= 0L) {
+            Log.w(
+                TAG,
+                "Cannot delete project item: invalid ID=$itemId"
+            )
             return
         }
 
@@ -907,9 +1161,14 @@ object FirestoreSync {
             return
         }
 
-        val currentUid = getCurrentUserUid()
+        val currentUid =
+            getCurrentUserUid()
 
-        if (currentUid.isBlank() ||
+        /*
+         * المستخدم يستطيع تعديل ملفه فقط.
+         */
+        if (
+            currentUid.isBlank() ||
             currentUid != user.uid
         ) {
 
@@ -926,26 +1185,27 @@ object FirestoreSync {
             return
         }
 
-        val userMap = mapOf(
+        val userMap =
+            mapOf(
 
-            "uid" to user.uid,
+                "uid" to user.uid,
 
-            "name" to user.name,
+                "name" to user.name,
 
-            "phone" to user.phone,
+                "phone" to user.phone,
 
-            "email" to user.email,
+                "email" to user.email,
 
-            "role" to normalizeRole(user.role),
+                "role" to normalizeRole(user.role),
 
-            "active" to user.active,
+                "active" to user.active,
 
-            "workshopId" to user.workshopId,
+                "workshopId" to user.workshopId,
 
-            "createdAt" to user.createdAt,
+                "createdAt" to user.createdAt,
 
-            "lastLoginAt" to user.lastLoginAt
-        )
+                "lastLoginAt" to user.lastLoginAt
+            )
 
         db.collection("users")
             .document(user.uid)
@@ -1002,7 +1262,8 @@ object FirestoreSync {
             return
         }
 
-        val managerUid = getCurrentUserUid()
+        val managerUid =
+            getCurrentUserUid()
 
         if (managerUid.isBlank()) {
 
@@ -1034,32 +1295,43 @@ object FirestoreSync {
             return
         }
 
-        val data = mapOf(
+        if (user.workshopId.isBlank()) {
 
-            "uid" to user.uid,
+            onResult(
+                false,
+                "workshopId الخاص بالعامل فارغ."
+            )
 
-            "name" to user.name,
+            return
+        }
 
-            "phone" to user.phone,
+        val data =
+            mapOf(
 
-            "email" to user.email,
+                "uid" to user.uid,
 
-            "role" to "WORKER",
+                "name" to user.name,
 
-            "active" to user.active,
+                "phone" to user.phone,
 
-            "workshopId" to user.workshopId,
+                "email" to user.email,
 
-            "createdAt" to user.createdAt,
+                "role" to "WORKER",
 
-            "lastLoginAt" to user.lastLoginAt,
+                "active" to user.active,
 
-            "createdBy" to managerUid,
+                "workshopId" to user.workshopId,
 
-            "updatedBy" to managerUid,
+                "createdAt" to user.createdAt,
 
-            "updatedAt" to System.currentTimeMillis()
-        )
+                "lastLoginAt" to user.lastLoginAt,
+
+                "createdBy" to managerUid,
+
+                "updatedBy" to managerUid,
+
+                "updatedAt" to System.currentTimeMillis()
+            )
 
         db.collection("users")
             .document(user.uid)
@@ -1122,7 +1394,8 @@ object FirestoreSync {
             return
         }
 
-        val managerUid = getCurrentUserUid()
+        val managerUid =
+            getCurrentUserUid()
 
         if (managerUid.isBlank()) {
 
@@ -1154,26 +1427,37 @@ object FirestoreSync {
             return
         }
 
-        val data = mapOf(
+        if (user.workshopId.isBlank()) {
 
-            "uid" to user.uid,
+            onResult(
+                false,
+                "workshopId الخاص بالعامل فارغ."
+            )
 
-            "name" to user.name,
+            return
+        }
 
-            "phone" to user.phone,
+        val data =
+            mapOf(
 
-            "email" to user.email,
+                "uid" to user.uid,
 
-            "role" to "WORKER",
+                "name" to user.name,
 
-            "active" to user.active,
+                "phone" to user.phone,
 
-            "workshopId" to user.workshopId,
+                "email" to user.email,
 
-            "updatedBy" to managerUid,
+                "role" to "WORKER",
 
-            "updatedAt" to System.currentTimeMillis()
-        )
+                "active" to user.active,
+
+                "workshopId" to user.workshopId,
+
+                "updatedBy" to managerUid,
+
+                "updatedAt" to System.currentTimeMillis()
+            )
 
         db.collection("users")
             .document(user.uid)
@@ -1220,15 +1504,14 @@ object FirestoreSync {
         val db = getDb()
 
         if (db == null) {
-
             onResult(null)
             return
         }
 
-        val uid = getCurrentUserUid()
+        val uid =
+            getCurrentUserUid()
 
         if (uid.isBlank()) {
-
             onResult(null)
             return
         }
@@ -1251,15 +1534,14 @@ object FirestoreSync {
         val db = getDb()
 
         if (db == null) {
-
             onResult(null)
             return
         }
 
-        val cleanUid = uid.trim()
+        val cleanUid =
+            uid.trim()
 
         if (cleanUid.isBlank()) {
-
             onResult(null)
             return
         }
@@ -1326,15 +1608,14 @@ object FirestoreSync {
         val db = getDb()
 
         if (db == null) {
-
             onResult(null)
             return
         }
 
-        val cleanQuery = query.trim()
+        val cleanQuery =
+            query.trim()
 
         if (cleanQuery.isBlank()) {
-
             onResult(null)
             return
         }
@@ -1367,6 +1648,10 @@ object FirestoreSync {
             }
             .addOnFailureListener {
 
+                /*
+                 * هذه الدالة مساعدة للبحث فقط.
+                 * لا تستخدم كمرجع Authorization.
+                 */
                 searchUserByEmail(
                     db,
                     cleanQuery,
@@ -1461,6 +1746,9 @@ object FirestoreSync {
                     ""
                 },
 
+            /*
+             * لا نحفظ كلمة المرور في Firestore.
+             */
             password = "",
 
             role = role,
@@ -1474,8 +1762,18 @@ object FirestoreSync {
                     ?: "",
 
             createdAt =
-                doc.getLong("createdAt")
-                    ?: System.currentTimeMillis()
+                getLongValue(
+                    doc,
+                    "createdAt",
+                    System.currentTimeMillis()
+                ),
+
+            lastLoginAt =
+                getLongValue(
+                    doc,
+                    "lastLoginAt",
+                    0L
+                )
         )
     }
 
@@ -1493,31 +1791,43 @@ object FirestoreSync {
 
         val db = getDb() ?: return
 
-        val uid = getCurrentUserUid()
+        val uid =
+            getCurrentUserUid()
 
-        if (uid.isBlank()) return
+        if (uid.isBlank()) {
+            return
+        }
 
         val cleanWorkshopId =
             workshopId.trim()
 
-        if (cleanWorkshopId.isBlank()) return
+        if (cleanWorkshopId.isBlank()) {
 
-        val data = mapOf(
+            Log.w(
+                TAG,
+                "Store settings workshopId empty."
+            )
 
-            "storeName" to storeName,
+            return
+        }
 
-            "storePhone" to storePhone,
+        val data =
+            mapOf(
 
-            "storeWhatsapp" to storeWhatsapp,
+                "storeName" to storeName,
 
-            "managerName" to managerName,
+                "storePhone" to storePhone,
 
-            "workshopId" to cleanWorkshopId,
+                "storeWhatsapp" to storeWhatsapp,
 
-            "updatedAt" to System.currentTimeMillis(),
+                "managerName" to managerName,
 
-            "updatedBy" to uid
-        )
+                "workshopId" to cleanWorkshopId,
+
+                "updatedAt" to System.currentTimeMillis(),
+
+                "updatedBy" to uid
+            )
 
         db.collection("store_settings")
             .document(cleanWorkshopId)
@@ -1556,7 +1866,9 @@ object FirestoreSync {
         val currentUid =
             getCurrentUserUid()
 
-        if (currentUid.isBlank()) return
+        if (currentUid.isBlank()) {
+            return
+        }
 
         val cleanWorkshopId =
             workshopId.trim()
@@ -1571,6 +1883,9 @@ object FirestoreSync {
             return
         }
 
+        /*
+         * يمنع إرسال AuditLog خاص بمستخدم آخر.
+         */
         if (
             log.workerId.isNotBlank() &&
             log.workerId != currentUid
@@ -1584,24 +1899,25 @@ object FirestoreSync {
             return
         }
 
-        val data = mapOf(
+        val data =
+            mapOf(
 
-            "workerId" to currentUid,
+                "workerId" to currentUid,
 
-            "workerName" to log.workerName,
+                "workerName" to log.workerName,
 
-            "action" to log.action,
+                "action" to log.action,
 
-            "projectId" to log.projectId,
+                "projectId" to log.projectId,
 
-            "projectName" to log.projectName,
+                "projectName" to log.projectName,
 
-            "timestamp" to log.timestamp,
+                "timestamp" to log.timestamp,
 
-            "workshopId" to cleanWorkshopId,
+                "workshopId" to cleanWorkshopId,
 
-            "updatedBy" to currentUid
-        )
+                "updatedBy" to currentUid
+            )
 
         db.collection("audit_logs")
             .add(data)
@@ -1706,6 +2022,10 @@ object FirestoreSync {
                     return@addOnSuccessListener
                 }
 
+                /*
+                 * fallback:
+                 * إذا كان رمز الورشة هو نفسه document ID.
+                 */
                 db.collection("workshops")
                     .document(cleanCode)
                     .get()
@@ -1813,26 +2133,27 @@ object FirestoreSync {
                 val now =
                     System.currentTimeMillis()
 
-                val data = mapOf(
+                val data =
+                    mapOf(
 
-                    "requestId" to requestId,
+                        "requestId" to requestId,
 
-                    "workerUid" to user.uid,
+                        "workerUid" to user.uid,
 
-                    "workerName" to user.name,
+                        "workerName" to user.name,
 
-                    "workerEmail" to user.email,
+                        "workerEmail" to user.email,
 
-                    "workshopId" to workshopId,
+                        "workshopId" to workshopId,
 
-                    "syncCode" to syncCode,
+                        "syncCode" to syncCode,
 
-                    "status" to "pending",
+                        "status" to "pending",
 
-                    "createdAt" to now,
+                        "createdAt" to now,
 
-                    "updatedAt" to now
-                )
+                        "updatedAt" to now
+                    )
 
                 requestRef
                     .set(data)
@@ -1869,8 +2190,9 @@ object FirestoreSync {
         onRequestsUpdated: (List<Map<String, Any>>) -> Unit
     ): ListenerRegistration? {
 
-        val db = getDb()
-            ?: return null
+        val db =
+            getDb()
+                ?: return null
 
         val cleanWorkshopId =
             workshopId.trim()
@@ -1916,6 +2238,7 @@ object FirestoreSync {
                         doc.data
                             ?.toMutableMap()
                             ?.apply {
+
                                 putIfAbsent(
                                     "requestId",
                                     doc.id
@@ -2050,6 +2373,10 @@ object FirestoreSync {
                 val batch =
                     db.batch()
 
+                // ------------------------------------------------
+                // 1. تحديث طلب الانضمام
+                // ------------------------------------------------
+
                 batch.update(
                     requestRef,
                     mapOf(
@@ -2061,6 +2388,10 @@ object FirestoreSync {
                         "updatedAt" to now
                     )
                 )
+
+                // ------------------------------------------------
+                // 2. إضافة العامل إلى members
+                // ------------------------------------------------
 
                 val memberRef =
                     db.collection("workshops")
@@ -2086,6 +2417,10 @@ object FirestoreSync {
 
                     SetOptions.merge()
                 )
+
+                // ------------------------------------------------
+                // 3. تحديث users/{workerUid}
+                // ------------------------------------------------
 
                 val userRef =
                     db.collection("users")
@@ -2192,6 +2527,7 @@ object FirestoreSync {
                     "updatedAt" to
                             System.currentTimeMillis()
                 )
+
             )
             .addOnSuccessListener {
 
@@ -2209,3 +2545,4 @@ object FirestoreSync {
             }
     }
 }
+```
